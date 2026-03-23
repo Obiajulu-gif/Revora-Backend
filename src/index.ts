@@ -139,8 +139,6 @@ const domainEventPublisher = new ConsoleDomainEventPublisher();
 app.use(createCorsMiddleware());
 app.use(express.json());
 app.use(morgan("dev"));
-app.use(
-app.use(morgan('dev'));
 app.use(API_VERSION_PREFIX, apiRouter);
 
 apiRouter.use(
@@ -162,7 +160,6 @@ app.get("/health", async (_req: Request, res: Response) => {
   });
 });
 
-app.get("/api/overview", (_req: Request, res: Response) => {
 apiRouter.get('/overview', (_req: Request, res: Response) => {
   res.json({
     name: "Stellar RevenueShare (Revora) Backend",
@@ -180,7 +177,11 @@ const shutdown = async (signal: string) => {
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
 
-app.listen(port, () => {
-  // eslint-disable-next-line no-console
-  console.log(`revora-backend listening on http://localhost:${port}`);
-});
+if (process.env.NODE_ENV !== "test") {
+  app.listen(port, () => {
+    // eslint-disable-next-line no-console
+    console.log(`revora-backend listening on http://localhost:${port}`);
+  });
+}
+
+export default app;
