@@ -1,10 +1,11 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
+import crypto, { timingSafeEqual } from 'node:crypto';
 import {
     JwtIssuer,
     LoginSuccessResponse,
     SessionRepository,
     UserRepository,
 } from './types';
+import { hashSessionToken, SESSION_TTL_MS } from '../auth/session';
 
 /**
  * Domain service that orchestrates the login flow:
@@ -46,15 +47,20 @@ export class LoginService {
             return null;
         }
 
-        // 3. Create session
+        // 3. Create a session row (returns deterministic session ID for tests).
         const sessionId = await this.sessionRepository.createSession(user.id);
 
-        // 4. Issue JWT
+        // 4. Issue JWT tied to the persistent session.
         const token = this.jwtIssuer.sign({
             userId: user.id,
             sessionId,
             role: user.role,
         });
+
+        const tokenHash = hashSessionToken(token);
+        const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
+
+        await this.sessionRepository.setSessionMetadata(sessionId, tokenHash, expiresAt);
 
         return {
             token,

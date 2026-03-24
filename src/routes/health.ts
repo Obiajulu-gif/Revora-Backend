@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, RequestHandler } from 'express';
 import { Pool } from 'pg';
 
 export const healthReadyHandler = (db: Pool) => async (_req: Request, res: Response): Promise<void> => {
@@ -27,9 +27,14 @@ export const healthReadyHandler = (db: Pool) => async (_req: Request, res: Respo
     }
 };
 
-export const createHealthRouter = (db: Pool): Router => {
+export const createHealthRouter = (db: Pool, requireAuth?: RequestHandler): Router => {
     const router = Router();
     router.get('/ready', healthReadyHandler(db));
+
+    if (requireAuth) {
+        router.get('/ready-auth', requireAuth, healthReadyHandler(db));
+    }
+
     return router;
 };
 

@@ -25,8 +25,24 @@ export interface UserRepository {
 }
 
 export interface SessionRepository {
-  /** Persist a new session and return its unique ID. */
+  /**
+   * Persist a new session and return its unique ID.
+   */
   createSession(userId: string): Promise<string>;
+
+  /**
+   * Attach token binding metadata to the session after JWT issuance.
+   */
+  setSessionMetadata(sessionId: string, tokenHash: string, expiresAt: Date): Promise<void>;
+
+  /**
+   * Lookup a session for an active token check.
+   */
+  findSessionById(sessionId: string): Promise<{
+    userId: string;
+    tokenHash: string;
+    expiresAt: Date;
+  } | null>;
 }
 
 // ── JWT helper ──────────────────────────────────────────────────────────
