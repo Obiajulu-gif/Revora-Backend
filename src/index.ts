@@ -12,6 +12,7 @@ import {
   MilestoneValidationEventRepository,
   VerifierAssignmentRepository,
 } from "./vaults/milestoneValidationRoute";
+import { overviewHandler } from "./routes/overview";
 
 const app = express();
 const port = process.env.PORT ?? 3000;
@@ -173,13 +174,7 @@ app.get("/health", async (_req: Request, res: Response) => {
   });
 });
 
-apiRouter.get('/overview', (_req: Request, res: Response) => {
-  res.json({
-    name: "Stellar RevenueShare (Revora) Backend",
-    description:
-      "Backend API skeleton for tokenized revenue-sharing on Stellar (offerings, investments, revenue distribution).",
-  });
-});
+apiRouter.get("/overview", overviewHandler);
 
 const shutdown = async (signal: string) => {
   console.log(`\n[server] ${signal} DB shutting down…`);

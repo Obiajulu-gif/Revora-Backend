@@ -43,7 +43,8 @@ function makeUser(overrides: Partial<RegisteredUser> = {}): RegisteredUser {
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
-(async function run() {
+describe('registerHandler', () => {
+  it('covers registration handler behaviors', async () => {
   // ── 201 on success ─────────────────────────────────────────────────────────
   {
     const svc = new MockRegisterService();
@@ -149,6 +150,5 @@ function makeUser(overrides: Partial<RegisteredUser> = {}): RegisteredUser {
     await handler(makeReq({ email: 'investor@example.com', password: 'password1' }), res, (e: unknown) => { capturedErr = e; });
     assert(capturedErr instanceof Error && capturedErr.message === 'unexpected DB failure');
   }
-
-  console.log('registerHandler tests passed');
-})();
+  });
+});

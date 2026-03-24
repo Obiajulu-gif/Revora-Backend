@@ -13,16 +13,14 @@ afterAll(async () => {
 });
 
 describe('Health Router', () => {
-    let mockPool: jest.Mocked<Pool>;
+    let mockPool: { query: jest.Mock };
     let mockReq: Partial<Request>;
     let mockRes: Partial<Response>;
     let jsonMock: jest.Mock;
     let statusMock: jest.Mock;
 
     beforeEach(() => {
-        mockPool = {
-            query: jest.fn(),
-        } as unknown as jest.Mocked<Pool>;
+        mockPool = { query: jest.fn() };
 
         jsonMock = jest.fn();
         statusMock = jest.fn().mockReturnValue({ json: jsonMock });
@@ -40,7 +38,7 @@ describe('Health Router', () => {
         (mockPool.query as jest.Mock).mockResolvedValueOnce({ rows: [{ '?column?': 1 }] });
         (global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true });
 
-        const handler = healthReadyHandler(mockPool);
+        const handler = healthReadyHandler(mockPool as unknown as Pool);
         await handler(mockReq as Request, mockRes as Response);
 
         expect(statusMock).toHaveBeenCalledWith(200);
@@ -50,7 +48,7 @@ describe('Health Router', () => {
     it('should return 503 when DB is down', async () => {
         (mockPool.query as jest.Mock).mockRejectedValueOnce(new Error('Connection timeout'));
 
-        const handler = healthReadyHandler(mockPool);
+        const handler = healthReadyHandler(mockPool as unknown as Pool);
         await handler(mockReq as Request, mockRes as Response);
 
         expect(statusMock).toHaveBeenCalledWith(503);
@@ -62,7 +60,7 @@ describe('Health Router', () => {
         (mockPool.query as jest.Mock).mockResolvedValueOnce({ rows: [{ '?column?': 1 }] });
         (global.fetch as jest.Mock).mockRejectedValueOnce(new Error('Network error'));
 
-        const handler = healthReadyHandler(mockPool);
+        const handler = healthReadyHandler(mockPool as unknown as Pool);
         await handler(mockReq as Request, mockRes as Response);
 
         expect(statusMock).toHaveBeenCalledWith(503);
@@ -73,7 +71,7 @@ describe('Health Router', () => {
         (mockPool.query as jest.Mock).mockResolvedValueOnce({ rows: [{ '?column?': 1 }] });
         (global.fetch as jest.Mock).mockResolvedValueOnce({ ok: false, status: 500 });
 
-        const handler = healthReadyHandler(mockPool);
+        const handler = healthReadyHandler(mockPool as unknown as Pool);
         await handler(mockReq as Request, mockRes as Response);
 
         expect(statusMock).toHaveBeenCalledWith(503);
@@ -81,7 +79,7 @@ describe('Health Router', () => {
     });
 
     it('should create returning router instance', () => {
-        const router = createHealthRouter(mockPool);
+        const router = createHealthRouter(mockPool as unknown as Pool);
         expect(router).toBeDefined();
         expect(typeof router.get).toBe('function');
     });

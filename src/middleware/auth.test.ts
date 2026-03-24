@@ -1,7 +1,6 @@
 import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
-import { authMiddleware, verifyJwt, requireInvestor, AuthenticatedRequest } from './auth';
-import { requireAuth } from './requireAuth';
+import { authMiddleware, verifyJwt, requireInvestor, AuthenticatedRequest, requireAuth } from './auth';
 import { signJwt } from '../utils/jwt';
 import { issueToken } from '../lib/jwt';
 import { AuthenticatedRequest as LogoutAuthenticatedRequest } from '../auth/logout/types';

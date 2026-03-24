@@ -16,6 +16,16 @@ export const createNotificationPreferencesRouter = ({
 }: CreateNotificationPreferencesRouterDeps): Router => {
   const router = Router();
 
+  const toWireShape = (prefs: {
+    email_notifications: boolean;
+    push_notifications: boolean;
+    sms_notifications: boolean;
+  }) => ({
+    email_notifications: prefs.email_notifications,
+    push_notifications: prefs.push_notifications,
+    sms_notifications: prefs.sms_notifications,
+  });
+
   router.get('/api/users/me/notification-preferences', requireAuth, async (req, res) => {
     const userId = (req as any).user?.id;
     if (!userId) {
@@ -31,7 +41,7 @@ export const createNotificationPreferencesRouter = ({
           sms_notifications: false,
         });
       }
-      res.json(preferences);
+      res.json(toWireShape(preferences));
     } catch (error) {
       res.status(500).json({ error: 'Failed to fetch notification preferences' });
     }
@@ -51,7 +61,7 @@ export const createNotificationPreferencesRouter = ({
         push_notifications,
         sms_notifications,
       });
-      res.json(updated);
+      res.json(toWireShape(updated));
     } catch (error) {
       res.status(500).json({ error: 'Failed to update notification preferences' });
     }
