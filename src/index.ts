@@ -15,6 +15,9 @@ import {
 import {
   enforceTransition,
 } from "./lib/offeringStatusGuard";
+import {
+  enforceInvestmentConsistency,
+} from "./lib/investmentConsistencyGuard";
 
 // TEMP mock DB (for test stability)
 const db = {
@@ -214,7 +217,38 @@ app.patch("/offerings/:id/status", requireAuth, async (req, res) => {
     });
   }
 });
+/**
+ * @notice Route for creating an investment in an offering
+ * @dev Enforces investment consistency checks before processing
+ */
+app.post("/offerings/:id/invest", requireAuth, async (req, res) => {
+  const { amount, investorId } = req.body;
+  const offering = await db.getOffering(req.params.id);
 
+  if (!offering) {
+    return res.status(404).json({ error: "Offering not found" });
+  }
+
+  try {
+    enforceInvestmentConsistency({
+      offeringStatus: offering.status,
+      amount,
+      investorId,
+      offeringId: offering.id,
+    });
+
+    return res.json({
+      success: true,
+      offeringId: offering.id,
+      investorId,
+      amount,
+    });
+  } catch (err: any) {
+    return res.status(400).json({
+      error: err.message,
+    });
+  }
+});
 apiRouter.get('/overview', (_req: Request, res: Response) => {
   res.json({
     name: "Stellar RevenueShare (Revora) Backend",
