@@ -1,6 +1,11 @@
 import { Request, Response } from 'express';
 import { Pool } from 'pg';
-import { healthReadyHandler } from './health';
+import createHealthRouter, { healthReadyHandler } from './health';
+import request from 'supertest';
+import app from '../index';
+import { closePool } from '../db/client';
+
+// Auth session hardening imports
 import { createRequireAuth } from '../middleware/auth';
 import { issueToken } from '../lib/jwt';
 import { hashSessionToken } from '../auth/session';
@@ -8,76 +13,93 @@ import { hashSessionToken } from '../auth/session';
 // Mock fetch for Stellar check
 global.fetch = jest.fn();
 
+afterAll(async () => {
+  await closePool();
+});
+
 describe('Health Router', () => {
-    let mockPool: jest.Mocked<Pool>;
-    let mockReq: Partial<Request>;
-    let mockRes: Partial<Response>;
-    let jsonMock: jest.Mock;
-    let statusMock: jest.Mock;
+  let mockPool: jest.Mocked<Pool>;
+  let mockReq: Partial<Request>;
+  let mockRes: Partial<Response>;
+  let jsonMock: jest.Mock;
+  let statusMock: jest.Mock;
 
-    beforeEach(() => {
-        mockPool = {
-            query: jest.fn(),
-        } as unknown as jest.Mocked<Pool>;
+  beforeEach(() => {
+    mockPool = {
+      query: jest.fn(),
+    } as unknown as jest.Mocked<Pool>;
 
-        jsonMock = jest.fn();
-        statusMock = jest.fn().mockReturnValue({ json: jsonMock });
+    jsonMock = jest.fn();
+    statusMock = jest.fn().mockReturnValue({ json: jsonMock });
 
-        mockReq = {};
-        mockRes = {
-            status: statusMock,
-            json: jsonMock,
-        };
+    mockReq = {};
+    mockRes = {
+      status: statusMock,
+      json: jsonMock,
+    };
 
-        jest.clearAllMocks();
-    });
+    jest.clearAllMocks();
+  });
 
-    it('should return 200 when both DB and Stellar are up', async () => {
-        (mockPool.query as jest.Mock).mockResolvedValueOnce({ rows: [{ '?column?': 1 }] });
-        (global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true });
+  it('should return 200 when both DB and Stellar are up', async () => {
+    (mockPool.query as jest.Mock).mockResolvedValueOnce({ rows: [{ '?column?': 1 }] });
+    (global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true });
 
-        const handler = healthReadyHandler(mockPool);
-        await handler(mockReq as Request, mockRes as Response);
+    const handler = healthReadyHandler(mockPool);
+    await handler(mockReq as Request, mockRes as Response);
 
-        expect(statusMock).toHaveBeenCalledWith(200);
-        expect(jsonMock).toHaveBeenCalledWith({ status: 'ok', db: 'up', stellar: 'up' });
-    });
+    expect(statusMock).toHaveBeenCalledWith(200);
+    expect(jsonMock).toHaveBeenCalledWith({ status: 'ok', db: 'up', stellar: 'up' });
+  });
 
-    it('should return 503 when DB is down', async () => {
-        (mockPool.query as jest.Mock).mockRejectedValueOnce(new Error('Connection timeout'));
+  it('should return 503 when DB is down', async () => {
+    (mockPool.query as jest.Mock).mockRejectedValueOnce(new Error('Connection timeout'));
 
-        const handler = healthReadyHandler(mockPool);
-        await handler(mockReq as Request, mockRes as Response);
+    const handler = healthReadyHandler(mockPool);
+    await handler(mockReq as Request, mockRes as Response);
 
-        expect(statusMock).toHaveBeenCalledWith(503);
-        expect(jsonMock).toHaveBeenCalledWith({ status: 'error', message: 'Database is down' });
-        expect(global.fetch).not.toHaveBeenCalled(); // DB checked first
-    });
+    expect(statusMock).toHaveBeenCalledWith(503);
+    expect(jsonMock).toHaveBeenCalledWith({ status: 'error', message: 'Database is down' });
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
 
-    it('should return 503 when Stellar Horizon is down', async () => {
-        (mockPool.query as jest.Mock).mockResolvedValueOnce({ rows: [{ '?column?': 1 }] });
-        (global.fetch as jest.Mock).mockRejectedValueOnce(new Error('Network error'));
+  it('should return 503 when Stellar Horizon is down', async () => {
+    (mockPool.query as jest.Mock).mockResolvedValueOnce({ rows: [{ '?column?': 1 }] });
+    (global.fetch as jest.Mock).mockRejectedValueOnce(new Error('Network error'));
 
-        const handler = healthReadyHandler(mockPool);
-        await handler(mockReq as Request, mockRes as Response);
+    const handler = healthReadyHandler(mockPool);
+    await handler(mockReq as Request, mockRes as Response);
 
-        expect(statusMock).toHaveBeenCalledWith(503);
-        expect(jsonMock).toHaveBeenCalledWith({ status: 'error', message: 'Stellar Horizon is down' });
-    });
+    expect(statusMock).toHaveBeenCalledWith(503);
+    expect(jsonMock).toHaveBeenCalledWith({ status: 'error', message: 'Stellar Horizon is down' });
+  });
 
-    it('should return 503 when Stellar Horizon returns non-OK status', async () => {
-        (mockPool.query as jest.Mock).mockResolvedValueOnce({ rows: [{ '?column?': 1 }] });
-        (global.fetch as jest.Mock).mockResolvedValueOnce({ ok: false, status: 500 });
+  it('should return 503 when Stellar Horizon returns non-OK status', async () => {
+    (mockPool.query as jest.Mock).mockResolvedValueOnce({ rows: [{ '?column?': 1 }] });
+    (global.fetch as jest.Mock).mockResolvedValueOnce({ ok: false, status: 500 });
 
-        const handler = healthReadyHandler(mockPool);
-        await handler(mockReq as Request, mockRes as Response);
+    const handler = healthReadyHandler(mockPool);
+    await handler(mockReq as Request, mockRes as Response);
 
-        expect(statusMock).toHaveBeenCalledWith(503);
-        expect(jsonMock).toHaveBeenCalledWith({ status: 'error', message: 'Stellar Horizon is down' });
-    });
+    expect(statusMock).toHaveBeenCalledWith(503);
+    expect(jsonMock).toHaveBeenCalledWith({ status: 'error', message: 'Stellar Horizon is down' });
+  });
 
+  it('should create returning router instance', () => {
+    const router = createHealthRouter(mockPool);
+    expect(router).toBeDefined();
+    expect(typeof router.get).toBe('function');
+  });
+});
+
+describe('Auth Session Hardening', () => {
   it('should authorize a valid session through createRequireAuth', async () => {
-    const token = issueToken({ subject: 'user-1', additionalPayload: { sid: 'session-abc' }, expiresIn: '1h' });
+    const token = issueToken({
+      subject: 'user-1',
+      additionalPayload: { sid: 'session-abc' },
+      expiresIn: '1h',
+    });
+
     const tokenHash = hashSessionToken(token);
 
     const fakeSessionRepo = {
@@ -92,17 +114,32 @@ describe('Health Router', () => {
 
     const requireAuth = createRequireAuth(fakeSessionRepo);
     const next = jest.fn();
-    const req = { headers: { authorization: `Bearer ${token}` } } as Request;
-    const res = { status: statusMock, json: jsonMock } as unknown as Response;
+
+    const req = {
+      headers: { authorization: `Bearer ${token}` },
+    } as Request;
+
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn(),
+    } as unknown as Response;
 
     await requireAuth(req, res, next);
 
     expect(next).toHaveBeenCalled();
-    expect((req as any).auth).toEqual({ userId: 'user-1', sessionId: 'session-abc', tokenId: token });
+    expect((req as any).auth).toEqual({
+      userId: 'user-1',
+      sessionId: 'session-abc',
+      tokenId: token,
+    });
   });
 
   it('should reject session when token hash mismatch', async () => {
-    const token = issueToken({ subject: 'user-1', additionalPayload: { sid: 'session-abc' }, expiresIn: '1h' });
+    const token = issueToken({
+      subject: 'user-1',
+      additionalPayload: { sid: 'session-abc' },
+      expiresIn: '1h',
+    });
 
     const fakeSessionRepo = {
       findById: jest.fn().mockResolvedValueOnce({
@@ -116,12 +153,56 @@ describe('Health Router', () => {
 
     const requireAuth = createRequireAuth(fakeSessionRepo);
     const next = jest.fn();
-    const req = { headers: { authorization: `Bearer ${token}` } } as Request;
-    const res = { status: statusMock, json: jsonMock } as unknown as Response;
+
+    const req = {
+      headers: { authorization: `Bearer ${token}` },
+    } as Request;
+
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn(),
+    } as unknown as Response;
 
     await requireAuth(req, res, next);
 
     expect(res.status).toHaveBeenCalledWith(401);
     expect(next).not.toHaveBeenCalled();
+  });
+});
+
+describe('API Version Prefix Consistency tests', () => {
+  it('should resolve /health without API prefix', async () => {
+    const res = await request(app).get('/health');
+    expect([200, 503]).toContain(res.status);
+  });
+
+  it('should resolve api routes with API_VERSION_PREFIX', async () => {
+    const prefix = process.env.API_VERSION_PREFIX ?? '/api/v1';
+    const res = await request(app).get(`${prefix}/overview`);
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty(
+      'name',
+      'Stellar RevenueShare (Revora) Backend',
+    );
+  });
+
+  it('should return 404 for api routes without prefix', async () => {
+    const res = await request(app).get('/overview');
+    expect(res.status).toBe(404);
+  });
+
+  it('should correctly scope protected endpoints under the prefix', async () => {
+    const prefix = process.env.API_VERSION_PREFIX ?? '/api/v1';
+    const res = await request(app).post(
+      `${prefix}/vaults/vault-1/milestones/milestone-1/validate`,
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it('should 404 for protected endpoints if prefix is lacking', async () => {
+    const res = await request(app).post(
+      '/vaults/vault-1/milestones/milestone-1/validate',
+    );
+    expect(res.status).toBe(404);
   });
 });
