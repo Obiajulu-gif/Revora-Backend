@@ -29,7 +29,7 @@ describe("authMiddleware", () => {
     it("should attach user to request with valid token", () => {
       const token = issueToken({
         subject: "user-123",
-        email: "test@example.com",
+        additionalPayload: { email: "test@example.com" },
       });
       mockReq.headers = {authorization: `Bearer ${token}`};
 

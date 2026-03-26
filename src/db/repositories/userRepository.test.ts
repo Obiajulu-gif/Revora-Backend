@@ -10,17 +10,18 @@ class MockPool {
 }
 
 (async function run() {
-  // findUserByEmail
+  // findByEmail
   const sampleUser = {
     id: 'u1',
     email: 'a@b.com',
     password_hash: 'hash',
     role: 'investor',
     created_at: new Date(),
+    updated_at: new Date(),
   };
 
-  const repo = new UserRepository(new MockPool([sampleUser]));
-  const found = await repo.findUserByEmail('a@b.com');
+  const repo = new UserRepository(new MockPool([sampleUser]) as any);
+  const found = await repo.findByEmail('a@b.com');
   assert(found !== null, 'expected to find user by email');
   assert(found!.email === 'a@b.com');
 

@@ -70,6 +70,8 @@ export interface LogEntry {
     message: string;
     stack?: string;
   };
+  /** Allow any additional properties from context */
+  [key: string]: unknown;
 }
 
 /**

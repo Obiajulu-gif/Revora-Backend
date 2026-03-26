@@ -5,18 +5,15 @@ export interface User {
   email: string;
   password_hash: string;
   name?: string;
-  role: string;
-  created_at: Date;
-  updated_at: Date;
   role: 'startup' | 'investor';
   created_at: Date;
+  updated_at: Date;
 }
 
 export interface CreateUserInput {
   email: string;
   password_hash: string;
   name?: string;
-  role?: string;
   role: 'startup' | 'investor';
 }
 
@@ -48,7 +45,7 @@ export class UserRepository {
       input.email,
       input.password_hash,
       input.name,
-      input.role || 'startup_admin',
+      input.role,
     ];
 
     const result: QueryResult<User> = await this.db.query(query, values);
@@ -68,30 +65,17 @@ export class UserRepository {
       return null;
     }
 
-  async findUserById(id: string): Promise<User | null> {
-    const query = `SELECT * FROM users WHERE id = $1 LIMIT 1`;
-    const result: QueryResult = await this.db.query(query, [id]);
-    if (result.rows.length === 0) return null;
     return this.mapUser(result.rows[0]);
   }
 
-  async findUserByEmail(email: string): Promise<User | null> {
-    const query = `SELECT * FROM users WHERE email = $1 LIMIT 1`;
-    const result: QueryResult = await this.db.query(query, [email]);
-    if (result.rows.length === 0) return null;
-    return this.mapUser(result.rows[0]);
-  }
-
-  async createUser(input: CreateUserInput): Promise<User> {
-    const query = `
-      INSERT INTO users (email, password_hash, role, created_at)
-      VALUES ($1, $2, $3, NOW())
-      RETURNING *
-    `;
-
-    const values = [input.email, input.password_hash, input.role];
-    const result: QueryResult = await this.db.query(query, values);
-    if (result.rows.length === 0) throw new Error('Failed to create user');
+  async findById(id: string): Promise<User | null> {
+    const query = 'SELECT * FROM users WHERE id = $1 LIMIT 1';
+    const result: QueryResult<User> = await this.db.query(query, [id]);
+    
+    if (result.rows.length === 0) {
+      return null;
+    }
+    
     return this.mapUser(result.rows[0]);
   }
 
@@ -100,6 +84,7 @@ export class UserRepository {
     const sets: string[] = [];
     const values: any[] = [];
     let idx = 1;
+    
     if (input.email !== undefined) {
       sets.push(`email = $${idx++}`);
       values.push(input.email);
@@ -115,20 +100,19 @@ export class UserRepository {
 
     if (sets.length === 0) {
       // Nothing to update; return existing user
-      const existing = await this.findUserById(input.id);
+      const existing = await this.findById(input.id);
       if (!existing) throw new Error('User not found');
       return existing;
     }
 
     const query = `
       UPDATE users SET ${sets.join(', ')},
-        /* updated_at column not present by default; keep created_at unchanged */
-        /* If you add updated_at in future migrations, consider updating it here */
+        updated_at = NOW()
       WHERE id = $${idx} RETURNING *
     `;
     values.push(input.id);
 
-    const result: QueryResult = await this.db.query(query, values);
+    const result: QueryResult<User> = await this.db.query(query, values);
     if (result.rows.length === 0) throw new Error('Failed to update user');
     return this.mapUser(result.rows[0]);
   }
@@ -142,8 +126,6 @@ export class UserRepository {
       role: row.role,
       created_at: row.created_at,
       updated_at: row.updated_at,
-      role: row.role,
-      created_at: row.created_at,
     };
   }
 }

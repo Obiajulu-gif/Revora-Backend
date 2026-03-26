@@ -199,10 +199,10 @@ describe('Logger', () => {
       const output1: LogEntry = JSON.parse(consoleLogSpy.mock.calls[0][0]);
       const output2: LogEntry = JSON.parse(consoleLogSpy.mock.calls[1][0]);
       
-      expect(output1.service).toBe('api');
-      expect(output1.version).toBe('1.0');
-      expect(output2.service).toBe('api');
-      expect(output2.version).toBe('1.0');
+      expect(output1['service']).toBe('api');
+      expect(output1['version']).toBe('1.0');
+      expect(output2['service']).toBe('api');
+      expect(output2['version']).toBe('1.0');
     });
 
     it('should merge context with log-specific data', () => {
@@ -210,7 +210,7 @@ describe('Logger', () => {
       logger.info('Test', { requestId: 'req-123' });
       
       const output: LogEntry = JSON.parse(consoleLogSpy.mock.calls[0][0]);
-      expect(output.service).toBe('api');
+      expect(output['service']).toBe('api');
       expect(output.requestId).toBe('req-123');
     });
 
@@ -220,7 +220,7 @@ describe('Logger', () => {
       logger.info('Test');
       
       const output: LogEntry = JSON.parse(consoleLogSpy.mock.calls[0][0]);
-      expect(output.service).toBeUndefined();
+      expect(output['service']).toBeUndefined();
     });
 
     it('should create child logger with additional context', () => {
@@ -230,8 +230,8 @@ describe('Logger', () => {
       childLogger.info('Child log');
       
       const output: LogEntry = JSON.parse(consoleLogSpy.mock.calls[0][0]);
-      expect(output.service).toBe('api');
-      expect(output.module).toBe('auth');
+      expect(output['service']).toBe('api');
+      expect(output['module']).toBe('auth');
     });
 
     it('should not affect parent logger from child', () => {
@@ -243,8 +243,8 @@ describe('Logger', () => {
       const parentOutput: LogEntry = JSON.parse(consoleLogSpy.mock.calls[0][0]);
       const childOutput: LogEntry = JSON.parse(consoleLogSpy.mock.calls[1][0]);
       
-      expect(parentOutput.child).toBeUndefined();
-      expect(childOutput.child).toBe('data');
+      expect(parentOutput['child']).toBeUndefined();
+      expect(childOutput['child']).toBe('data');
     });
   });
 
@@ -285,10 +285,11 @@ describe('Logger', () => {
       });
       
       const output: LogEntry = JSON.parse(consoleLogSpy.mock.calls[0][0]);
-      expect(output.context?.user.name).toBe('John');
-      expect(output.context?.user.password).toBe('[REDACTED]');
-      expect(output.context?.user.profile.email).toBe('john@example.com');
-      expect(output.context?.user.profile.secret).toBe('[REDACTED]');
+      const user = output.context?.user as any;
+      expect(user.name).toBe('John');
+      expect(user.password).toBe('[REDACTED]');
+      expect(user.profile.email).toBe('john@example.com');
+      expect(user.profile.secret).toBe('[REDACTED]');
     });
 
     it('should redact fields case-insensitively', () => {
@@ -317,9 +318,10 @@ describe('Logger', () => {
       });
       
       const output: LogEntry = JSON.parse(consoleLogSpy.mock.calls[0][0]);
-      expect(output.context?.users[0].password).toBe('[REDACTED]');
-      expect(output.context?.users[1].password).toBe('[REDACTED]');
-      expect(output.context?.users[0].name).toBe('John');
+      const users = output.context?.users as any[];
+      expect(users[0].password).toBe('[REDACTED]');
+      expect(users[1].password).toBe('[REDACTED]');
+      expect(users[0].name).toBe('John');
     });
   });
 

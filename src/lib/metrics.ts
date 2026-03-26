@@ -477,7 +477,8 @@ export class MetricsCollector {
     const name = match[1];
     const labelStr = match[2];
 
-    if (!labelStr) return { name };
+    // Handle empty labels case: "metric{}"
+    if (!labelStr || labelStr.trim() === '') return { name };
 
     const labels: Record<string, string> = {};
     const labelPairs = labelStr.match(/(\w+)="([^"]*)"/g);

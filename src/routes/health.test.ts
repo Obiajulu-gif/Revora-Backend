@@ -162,7 +162,8 @@ describe('Health Router', () => {
 
     it('should return degraded status when database pool is exhausted', async () => {
       mockPool.query = jest.fn().mockResolvedValueOnce({ rows: [{ '?column?': 1 }] });
-      mockPool.waitingCount = 5; // Connections waiting
+      // Use Object.defineProperty to set read-only properties
+      Object.defineProperty(mockPool, 'waitingCount', { value: 5, writable: true });
       (global.fetch as jest.Mock).mockResolvedValueOnce({
         ok: true,
         headers: new Map([['content-type', 'application/json']]),
@@ -181,8 +182,9 @@ describe('Health Router', () => {
 
     it('should include database pool statistics in metadata', async () => {
       mockPool.query = jest.fn().mockResolvedValueOnce({ rows: [{ '?column?': 1 }] });
-      mockPool.totalCount = 10;
-      mockPool.idleCount = 7;
+      // Use Object.defineProperty to set read-only properties
+      Object.defineProperty(mockPool, 'totalCount', { value: 10, writable: true });
+      Object.defineProperty(mockPool, 'idleCount', { value: 7, writable: true });
       (global.fetch as jest.Mock).mockResolvedValueOnce({
         ok: true,
         headers: new Map([['content-type', 'application/json']]),
