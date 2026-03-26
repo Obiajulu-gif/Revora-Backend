@@ -5,6 +5,7 @@ import {
     SessionRepository,
     UserRepository,
 } from './types';
+import { hashSessionToken, SESSION_TTL_MS } from '../auth/session';
 
 /**
  * Domain service that orchestrates the login flow:

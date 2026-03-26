@@ -29,6 +29,23 @@ export class SessionRepository {
   constructor(private db: Pool) {}
 
   async createSession(input: CreateSessionInput): Promise<Session> {
+    // allow explicit session id (for upstream session id generation) or default DB uuid.
+    if (input.id) {
+      const query = `
+        INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at)
+        VALUES ($1, $2, $3, $4, NOW())
+        RETURNING *
+      `;
+      const result: QueryResult<Session> = await this.db.query(query, [
+        input.id,
+        input.user_id,
+        input.token_hash,
+        input.expires_at,
+      ]);
+      if (result.rows.length === 0) throw new Error('Failed to create session');
+      return this.mapSession(result.rows[0]);
+    }
+
     const query = `
       INSERT INTO sessions (id, user_id, token_hash, expires_at, parent_id, created_at)
       VALUES ($1, $2, $3, $4, $5, NOW())
@@ -43,6 +60,37 @@ export class SessionRepository {
     ]);
     if (result.rows.length === 0) throw new Error('Failed to create session');
     return this.mapSession(result.rows[0]);
+  }
+
+  async createSessionForUser(userId: string): Promise<string> {
+    const placeholder = await this.createSession({
+      user_id: userId,
+      token_hash: '',
+      expires_at: new Date(0),
+    });
+    return placeholder.id;
+  }
+
+  async setSessionMetadata(sessionId: string, tokenHash: string, expiresAt: Date): Promise<void> {
+    await this.db.query(
+      `UPDATE sessions SET token_hash = $1, expires_at = $2 WHERE id = $3`,
+      [tokenHash, expiresAt, sessionId],
+    );
+  }
+
+  async createSessionForUser(
+    userId: string,
+    sessionId: string,
+    tokenHash: string,
+    expiresAt: Date,
+  ): Promise<string> {
+    const session = await this.createSession({
+      id: sessionId,
+      user_id: userId,
+      token_hash: tokenHash,
+      expires_at: expiresAt,
+    });
+    return session.id;
   }
 
   async findById(id: string): Promise<Session | null> {
