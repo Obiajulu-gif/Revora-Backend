@@ -9,7 +9,11 @@
     "migrate": "node src/db/migrate.js",
     "build": "tsc",
     "start": "node dist/index.js",
-    "lint": "eslint \"src/**/*.{ts,tsx}\""
+    "lint": "eslint \"src/**/*.{ts,tsx}\"",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "test:e2e": "jest e2e-happy-path"
   },
   "dependencies": {
     "@types/pg": "^8.16.0",
@@ -28,6 +32,7 @@
     "@typescript-eslint/eslint-plugin": "^8.15.0",
     "@typescript-eslint/parser": "^8.15.0",
     "eslint": "^9.14.0",
+    "ts-jest": "^29.1.0",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.7.0"
   }
