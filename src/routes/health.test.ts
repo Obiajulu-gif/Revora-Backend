@@ -2085,3 +2085,114 @@ describe('Event Publisher Internal Reliability Units', () => {
         await publisher.shutdown();
     });
 });
+
+/**
+ * @section Graceful Shutdown Completeness
+ *
+ * @dev Strategy:
+ *  - Uses jest.spyOn on the real imported `dbClient` module to override `closePool`,
+ *    avoiding the `jest.doMock` + dynamic import trap (modules are already bound at load time).
+ *  - Injects a real `net.Server` listening on port 0 into the index module's exported
+ *    `server` reference so the `server.close()` code path is exercised deterministically.
+ *  - Mocks `process.exit` to prevent the test runner from terminating.
+ *
+ * Security paths covered:
+ *  1. Happy path — clean server+DB close → exits 0
+ *  2. Timeout path — stalled closePool triggers forced exit 1 after 10 s
+ *  3. Error path — closePool rejection logs error and exits 1
+ *  4. No-server path — server undefined (test env) skips server.close(), still exits 0
+ */
+describe('Graceful Shutdown Completeness', () => {
+    let mockExit: jest.SpyInstance;
+    let mockConsoleLog: jest.SpyInstance;
+    let mockConsoleError: jest.SpyInstance;
+    let closePoolSpy: jest.SpyInstance;
+    let fakeServer: http.Server;
+
+    beforeEach((done) => {
+        // Prevent process.exit from killing the test runner
+        mockExit = jest.spyOn(process, 'exit').mockImplementation((_code?: number | string | null | undefined) => undefined as never);
+        mockConsoleLog = jest.spyOn(console, 'log').mockImplementation(() => {});
+        mockConsoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+        // Create a real http.Server listening on a random port so server.close() resolves immediately
+        fakeServer = app.listen(0, done);
+    });
+
+    afterEach((done) => {
+        jest.restoreAllMocks();
+        if (fakeServer.listening) {
+            fakeServer.close(done);
+        } else {
+            done();
+        }
+    });
+
+    it('should stop HTTP server and close DB pool, then exit with 0', async () => {
+        // Spy on real closePool to resolve successfully
+        closePoolSpy = jest.spyOn(dbClient, 'closePool').mockResolvedValue(undefined);
+
+        // Use setServer() to inject into module's internal let variable
+        setServer(fakeServer);
+
+        await shutdown('SIGTERM');
+
+        expect(closePoolSpy).toHaveBeenCalledTimes(1);
+        expect(mockConsoleLog).toHaveBeenCalledWith('[server] HTTP server closed.');
+        expect(mockConsoleLog).toHaveBeenCalledWith('[server] Graceful shutdown complete.');
+        expect(mockExit).toHaveBeenCalledWith(0);
+    });
+
+    it('should forcibly exit with 1 when shutdown times out (stalled closePool)', async () => {
+        jest.useFakeTimers();
+
+        // closePool never resolves — simulates a hanging DB connection
+        closePoolSpy = jest.spyOn(dbClient, 'closePool').mockImplementation(() => new Promise(() => {}));
+
+        setServer(fakeServer);
+
+        // Fire shutdown without awaiting (it will stall on closePool)
+        shutdown('SIGINT');
+
+        // Advance past the 10 s hard-timeout threshold
+        jest.advanceTimersByTime(11000);
+
+        expect(mockConsoleError).toHaveBeenCalledWith(
+            expect.stringContaining('timeout exceeded')
+        );
+        expect(mockExit).toHaveBeenCalledWith(1);
+
+        jest.useRealTimers();
+    });
+
+    it('should exit with 1 when closePool throws during shutdown', async () => {
+        closePoolSpy = jest.spyOn(dbClient, 'closePool').mockRejectedValue(
+            new Error('Fatal DB Close Failure')
+        );
+
+        setServer(fakeServer);
+
+        await shutdown('SIGTERM');
+
+        expect(mockConsoleError).toHaveBeenCalledWith(
+            '[server] Error during shutdown:',
+            expect.any(Error)
+        );
+        expect(mockExit).toHaveBeenCalledWith(1);
+    });
+
+    it('should skip server.close() and still exit cleanly when server is undefined', async () => {
+        // Validates the branch where the process was started in test mode (no server bound)
+        closePoolSpy = jest.spyOn(dbClient, 'closePool').mockResolvedValue(undefined);
+
+        // Validate branch where server was never started (test mode)
+        setServer(undefined);
+
+        await shutdown('SIGTERM');
+
+        // server.close() log must NOT appear — that branch was skipped
+        expect(mockConsoleLog).not.toHaveBeenCalledWith('[server] HTTP server closed.');
+        expect(mockConsoleLog).toHaveBeenCalledWith('[server] Graceful shutdown complete.');
+        expect(mockExit).toHaveBeenCalledWith(0);
+    });
+});
