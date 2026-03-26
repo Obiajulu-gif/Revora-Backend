@@ -31,7 +31,8 @@ class FakeUserRepository implements IUserRepository {
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
-(async function run() {
+describe('RegisterService', () => {
+  it('covers registration service behaviors', async () => {
   // ── Success: creates investor with hashed password ──────────────────────────
   {
     const repo = new FakeUserRepository();
@@ -119,6 +120,5 @@ class FakeUserRepository implements IUserRepository {
     }
     assert(threw, 'DB error should propagate');
   }
-
-  console.log('registerService tests passed');
-})();
+  });
+});

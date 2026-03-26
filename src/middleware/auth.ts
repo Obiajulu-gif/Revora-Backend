@@ -40,9 +40,9 @@ export function authMiddleware(): RequestHandler {
     try {
       const payload = verifyToken(token);
       (req as AuthenticatedRequest).user = {
+        ...payload,
         sub: payload.sub,
         email: payload.email,
-        ...payload,
       };
       next();
     } catch (error) {
@@ -76,7 +76,11 @@ export function optionalAuthMiddleware(): RequestHandler {
 
     try {
       const payload = verifyToken(parts[1]);
-      (req as AuthenticatedRequest).user = { sub: payload.sub, email: payload.email, ...payload };
+      (req as AuthenticatedRequest).user = {
+        ...payload,
+        sub: payload.sub,
+        email: payload.email,
+      };
     } catch {
       (req as AuthenticatedRequest).user = undefined;
     }

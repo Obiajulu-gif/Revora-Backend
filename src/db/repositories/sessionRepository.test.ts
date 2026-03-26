@@ -11,11 +11,11 @@ const mockSession: Session = {
 
 describe('SessionRepository', () => {
   let repository: SessionRepository;
-  let mockPool: jest.Mocked<Pool>;
+  let mockPool: { query: jest.Mock };
 
   beforeEach(() => {
     mockPool = { query: jest.fn() } as any;
-    repository = new SessionRepository(mockPool);
+    repository = new SessionRepository(mockPool as unknown as Pool);
   });
 
   describe('createSession', () => {
