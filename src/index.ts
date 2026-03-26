@@ -2,7 +2,12 @@ import 'dotenv/config';
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import morgan from 'morgan';
-import { dbHealth, closePool } from './db/client';
+import { dbHealth, closePool, query } from './db/client';
+import { Pool } from 'pg';
+import { globalMetrics } from './lib/metrics';
+import { globalLogger } from './lib/logger';
+import { metricsMiddleware, createMetricsHandler, createPrometheusHandler } from './middleware/metricsMiddleware';
+import { createHealthRouter } from './routes/health';
 import {
   createMilestoneValidationRouter,
   DomainEventPublisher,
@@ -129,6 +134,13 @@ const domainEventPublisher = new ConsoleDomainEventPublisher();
 app.use(cors());
 app.use(express.json());
 app.use(morgan('dev'));
+
+// Metrics middleware for automatic HTTP metrics collection
+app.use(metricsMiddleware({
+  metrics: globalMetrics,
+  logger: globalLogger,
+  detailedRoutes: true,
+}));
 app.use(
   createMilestoneValidationRouter({
     requireAuth,
@@ -139,14 +151,20 @@ app.use(
   })
 );
 
-app.get('/health', async (_req: Request, res: Response) => {
-  const db = await dbHealth();
-  res.status(db.healthy ? 200 : 503).json({
-    status: db.healthy ? 'ok' : 'degraded',
-    service: 'revora-backend',
-    db,
-  });
+// Health check endpoints with metrics integration
+const dbPool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : undefined,
+  max: 10,
+  idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 5_000,
 });
+
+app.use('/health', createHealthRouter(dbPool, globalMetrics, globalLogger));
+
+// Metrics endpoints (should be protected in production)
+app.get('/metrics', createMetricsHandler(globalMetrics, dbPool));
+app.get('/metrics/prometheus', createPrometheusHandler(globalMetrics));
 
 app.get('/api/overview', (_req: Request, res: Response) => {
   res.json({
@@ -157,16 +175,26 @@ app.get('/api/overview', (_req: Request, res: Response) => {
 });
 
 const shutdown = async (signal: string) => {
-  console.log(`\n[server] ${signal} DB shutting down…`);
-  await closePool();
+  globalLogger.info(`Received ${signal}, shutting down gracefully`);
+  
+  try {
+    await closePool();
+    await dbPool.end();
+    globalLogger.info('Database connections closed');
+  } catch (error) {
+    globalLogger.error('Error during shutdown', { error });
+  }
+  
   process.exit(0);
 };
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
-
 app.listen(port, () => {
-  // eslint-disable-next-line no-console
-  console.log(`revora-backend listening on http://localhost:${port}`);
+  globalLogger.info('Server started', {
+    port,
+    environment: process.env.NODE_ENV || 'development',
+    version: process.env.npm_package_version || '0.1.0',
+  });
 });
