@@ -18,6 +18,7 @@ import {
 } from './vaults/milestoneValidationRoute';
 
 const port = process.env.PORT ?? 3000;
+
 /**
  * @dev The global prefix applied to all business logic routers.
  * Defaults to `/api/v1` if `process.env.API_VERSION_PREFIX` is not supplied.
@@ -66,6 +67,7 @@ class InMemoryMilestoneValidationEventRepository
   private counter = 0;
   async create(input: { vaultId: string; milestoneId: string; verifierId: string; createdAt: Date; }): Promise<MilestoneValidationEvent> {
     this.counter += 1;
+
     const event: MilestoneValidationEvent = {
       id: `validation-event-${this.counter}`,
       vault_id: input.vaultId,

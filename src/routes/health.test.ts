@@ -1820,3 +1820,86 @@ describe('Revenue Route Schema Validation tests', () => {
         );
     });
 });
+
+describe("API Docs Route Security", () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalEnableApiDocs = process.env.ENABLE_API_DOCS;
+  const originalApiDocsAccessKey = process.env.API_DOCS_ACCESS_KEY;
+
+  afterEach(() => {
+    if (originalNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = originalNodeEnv;
+    }
+
+    if (originalEnableApiDocs === undefined) {
+      delete process.env.ENABLE_API_DOCS;
+    } else {
+      process.env.ENABLE_API_DOCS = originalEnableApiDocs;
+    }
+
+    if (originalApiDocsAccessKey === undefined) {
+      delete process.env.API_DOCS_ACCESS_KEY;
+    } else {
+      process.env.API_DOCS_ACCESS_KEY = originalApiDocsAccessKey;
+    }
+  });
+
+  it("should allow api docs outside production", async () => {
+    process.env.NODE_ENV = "development";
+    delete process.env.ENABLE_API_DOCS;
+    delete process.env.API_DOCS_ACCESS_KEY;
+
+    const res = await request(app).get("/api-docs");
+
+    expect(res.status).toBe(301);
+  });
+
+  it("should block api docs in production by default", async () => {
+    process.env.NODE_ENV = "production";
+    delete process.env.ENABLE_API_DOCS;
+    delete process.env.API_DOCS_ACCESS_KEY;
+
+    const res = await request(app).get("/api-docs");
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ message: "Not found" });
+  });
+
+  it("should require access key when docs are enabled in production", async () => {
+    process.env.NODE_ENV = "production";
+    process.env.ENABLE_API_DOCS = "true";
+    process.env.API_DOCS_ACCESS_KEY = "secret123";
+
+    const res = await request(app).get("/api-docs");
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ message: "Forbidden" });
+  });
+
+  it("should reject wrong access key when docs are enabled in production", async () => {
+    process.env.NODE_ENV = "production";
+    process.env.ENABLE_API_DOCS = "true";
+    process.env.API_DOCS_ACCESS_KEY = "secret123";
+
+    const res = await request(app)
+      .get("/api-docs")
+      .set("x-api-docs-key", "wrong-key");
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ message: "Forbidden" });
+  });
+
+  it("should allow api docs with correct access key in production", async () => {
+    process.env.NODE_ENV = "production";
+    process.env.ENABLE_API_DOCS = "true";
+    process.env.API_DOCS_ACCESS_KEY = "secret123";
+
+    const res = await request(app)
+      .get("/api-docs")
+      .set("x-api-docs-key", "secret123");
+
+    expect(res.status).toBe(301);
+  });
+});
