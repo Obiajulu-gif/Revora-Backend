@@ -2196,3 +2196,122 @@ describe('Graceful Shutdown Completeness', () => {
         expect(mockExit).toHaveBeenCalledWith(0);
     });
 });
+
+describe('Notification Read-State Concurrency #175', () => {
+    let poolSpy: jest.SpyInstance;
+
+    beforeAll(() => {
+        // Intercept pool query functionally for integration testing
+        // @ts-ignore
+        poolSpy = jest.spyOn(require('../db/client').pool, 'query');
+    });
+
+    afterAll(() => {
+        poolSpy.mockRestore();
+    });
+
+    afterEach(() => {
+        jest.clearAllMocks();
+    });
+
+    it('handles concurrent identical mark-read requests idempotently and atomically', async () => {
+        let updateCount = 0;
+        
+        // Simulating pessimistic lock or atomic DB operation behavior on concurrent execution
+        poolSpy.mockImplementation(async (sql: string, params: any[]) => {
+            // Delay to amplify concurrency window
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            
+            if (sql.includes('UPDATE notifications SET read = true WHERE id = $1')) {
+                updateCount++;
+                // Simulating atomicity: only the first ever update will mutate the row
+                if (updateCount === 1) {
+                    return { rowCount: 1, rows: [{ id: params[0] }] };
+                }
+                // Subsequent concurrent attempts see it already updated if read=false was required
+                return { rowCount: 0, rows: [] };
+            }
+            if (sql.includes('SELECT read FROM notifications')) {
+                // Secondary check for idempotency finds it already true
+                return { rowCount: 1, rows: [{ read: true }] };
+            }
+            return { rowCount: 0, rows: [] };
+        });
+
+        const prefix = process.env.API_VERSION_PREFIX ?? '/api/v1';
+        
+        // Fire 5 concurrent requests representing frontend race conditions
+        const requests = Array.from({ length: 5 }).map(() =>
+            request(app)
+                .patch(`${prefix}/notifications/notif-concurrent/read`)
+                .set('x-user-id', 'test-user')
+                .set('x-user-role', 'investor')
+        );
+
+        const responses = await Promise.all(requests);
+
+        // Assert all requests succeeded without internal errors or race collisions
+        responses.forEach(res => {
+            expect(res.status).toBe(200);
+            expect(res.body).toHaveProperty('marked', 1);
+        });
+
+        // The DB update statement should be executed 5 times, but only the first returns updated rows
+        expect(poolSpy).toHaveBeenCalled();
+        expect(updateCount).toBe(5);
+    });
+
+    it('rejects unauthorized access when marking notifications as read', async () => {
+        const prefix = process.env.API_VERSION_PREFIX ?? '/api/v1';
+        const res = await request(app).patch(`${prefix}/notifications/notif-auth/read`);
+        expect(res.status).toBe(401);
+    });
+
+    it('returns 404 if the notification does not exist or user lacks ownership', async () => {
+        poolSpy.mockImplementation(async (sql: string) => {
+            // Return 0 for both UPDATE and SELECT
+            return { rowCount: 0, rows: [] };
+        });
+
+        const prefix = process.env.API_VERSION_PREFIX ?? '/api/v1';
+        const res = await request(app)
+            .patch(`${prefix}/notifications/notif-missing/read`)
+            .set('x-user-id', 'test-user')
+            .set('x-user-role', 'investor');
+            
+        expect(res.status).toBe(404);
+        expect(res.body.error).toBe('Not found');
+    });
+
+    it('gracefully handles bulk read marking for concurrency', async () => {
+        let callCount = 0;
+        poolSpy.mockImplementation(async (sql: string, params: any[]) => {
+            if (sql.includes('UPDATE notifications SET read = true WHERE id = ANY($1)')) {
+                callCount++;
+                if (callCount === 1) return { rowCount: 3, rows: [{id: 1}, {id: 2}, {id: 3}] };
+                return { rowCount: 0, rows: [] };
+            }
+            return { rowCount: 0, rows: [] };
+        });
+
+        const prefix = process.env.API_VERSION_PREFIX ?? '/api/v1';
+        
+        // Fire 2 concurrent bulk requests
+        const requests = Array.from({ length: 2 }).map(() =>
+            request(app)
+                .patch(`${prefix}/notifications/bulk/read`)
+                .send({ ids: ['n1', 'n2', 'n3'] })
+                .set('x-user-id', 'test-user')
+                .set('x-user-role', 'investor')
+        );
+
+        const responses = await Promise.all(requests);
+        expect(responses[0].status).toBe(200);
+        expect(responses[0].body.marked).toBe(3);
+        
+        // The second one returns 0 successfully marked
+        expect(responses[1].status).toBe(200);
+        expect(responses[1].body.marked).toBe(0);
+    });
+});
+

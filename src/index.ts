@@ -2,11 +2,13 @@ import 'dotenv/config';
 import { randomUUID } from 'crypto';
 import express, { NextFunction, Request, RequestHandler, Response } from 'express';
 import morgan from 'morgan';
-import { closePool, dbHealth, query as dbQuery } from './db/client';
+import { Pool } from 'pg';
+import { closePool, dbHealth, pool, query as dbQuery } from './db/client';
 import { createCorsMiddleware } from './middleware/cors';
 import { errorHandler } from './middleware/errorHandler';
 import { Errors } from './lib/errors';
 import { createHealthRouter } from './routes/health';
+import createNotificationsRouter, { NotificationRepo, Notification } from './routes/notifications';
 import {
   createMilestoneValidationRouter,
   DomainEventPublisher,
@@ -27,6 +29,42 @@ const port = process.env.PORT ?? 3000;
 const API_VERSION_PREFIX = process.env.API_VERSION_PREFIX ?? '/api/v1';
 
 // --- Repository Implementations ---
+class PostgresNotificationRepo implements NotificationRepo {
+  constructor(private readonly db: Pool) {}
+  
+  async listByUser(userId: string): Promise<Notification[]> {
+    const res = await this.db.query(
+      'SELECT * FROM notifications WHERE user_id = $1 ORDER BY created_at DESC',
+      [userId]
+    );
+    return res.rows as Notification[];
+  }
+
+  async markRead(id: string, userId: string): Promise<boolean> {
+    const updateRes = await this.db.query(
+      'UPDATE notifications SET read = true WHERE id = $1 AND user_id = $2 AND read = false RETURNING id',
+      [id, userId]
+    );
+    if (updateRes.rowCount !== null && updateRes.rowCount > 0) return true;
+
+    const checkRes = await this.db.query(
+      'SELECT read FROM notifications WHERE id = $1 AND user_id = $2',
+      [id, userId]
+    );
+    if (checkRes.rowCount !== null && checkRes.rowCount > 0) return true;
+    return false;
+  }
+
+  async markReadBulk(ids: string[], userId: string): Promise<number> {
+    if (!ids || ids.length === 0) return 0;
+    const updateRes = await this.db.query(
+      'UPDATE notifications SET read = true WHERE id = ANY($1) AND user_id = $2 AND read = false RETURNING id',
+      [ids, userId]
+    );
+    return updateRes.rowCount ?? 0;
+  }
+}
+
 class InMemoryMilestoneRepository implements MilestoneRepository {
   constructor(private readonly milestones = new Map<string, Milestone>()) { }
   private key(vaultId: string, milestoneId: string): string { return `${vaultId}:${milestoneId}`; }
@@ -170,6 +208,7 @@ export function createApp(): express.Express {
   const app = express();
   const apiRouter = express.Router();
   const milestoneDeps = createMilestoneDependencies();
+  const notificationRepo = new PostgresNotificationRepo(pool);
 
   app.use((req, _res, next) => {
     (req as Request & { requestId?: string }).requestId =
@@ -205,6 +244,13 @@ export function createApp(): express.Express {
       requireAuth,
       ...milestoneDeps,
     }),
+  );
+
+  apiRouter.use(
+    createNotificationsRouter({
+      notificationRepo,
+      verifyJWT: requireAuth,
+    })
   );
 
   app.use(API_VERSION_PREFIX, apiRouter);
