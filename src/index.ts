@@ -280,6 +280,10 @@ export function createApp(): express.Express {
     }),
   );
 
+  // --- Payout Filters & Pagination (Issue #149) ---
+  const payoutRepo = new InMemoryPayoutRepository();
+  app.use(createPayoutsRouter({ payoutRepo, verifyJWT: requireAuth }));
+
   app.use(API_VERSION_PREFIX, apiRouter);
   app.use((_req, _res, next) => next(Errors.notFound('Route not found')));
   app.use(errorHandler);
