@@ -2231,4 +2231,242 @@ describe('Graceful Shutdown Completeness', () => {
         expect(mockConsoleLog).toHaveBeenCalledWith('[server] Graceful shutdown complete.');
         expect(mockExit).toHaveBeenCalledWith(0);
     });
+  });
+});
+
+describe("Offering Status Guardrails", () => {
+  it("allows valid transition", () => {
+    expect(
+      canTransition("draft", "pending_review")
+    ).toBe(true);
+  });
+
+  it("blocks invalid transition", () => {
+    expect(
+      canTransition("draft", "published")
+    ).toBe(false);
+  });
+
+  it("throws on invalid transition", () => {
+    expect(() =>
+      enforceTransition("draft", "published")
+    ).toThrow();
+  });
+
+  it("throws on unknown state", () => {
+    expect(() =>
+      enforceTransition("ghost" as any, "draft")
+    ).toThrow();
+  });
+
+  it("blocks same-state transition", () => {
+    expect(
+      canTransition("draft", "draft")
+    ).toBe(false);
+  });
+});
+
+describe("Investment Consistency Checks", () => {
+  it("allows investment in a published offering", () => {
+    expect(canInvest("published")).toBe(true);
+  });
+
+  it("blocks investment in a draft offering", () => {
+    expect(canInvest("draft")).toBe(false);
+  });
+
+  it("blocks investment in a pending_review offering", () => {
+    expect(canInvest("pending_review")).toBe(false);
+  });
+
+  it("blocks investment in an archived offering", () => {
+    expect(canInvest("archived")).toBe(false);
+  });
+
+  it("validates a positive amount", () => {
+    expect(isValidAmount(100)).toBe(true);
+  });
+
+  it("rejects a zero amount", () => {
+    expect(isValidAmount(0)).toBe(false);
+  });
+
+  it("rejects a negative amount", () => {
+    expect(isValidAmount(-50)).toBe(false);
+  });
+
+  it("rejects a non-finite amount", () => {
+    expect(isValidAmount(Infinity)).toBe(false);
+  });
+
+  it("throws when offering is not published", () => {
+    expect(() =>
+      enforceInvestmentConsistency({
+        offeringStatus: "draft",
+        amount: 100,
+        investorId: "investor-1",
+        offeringId: "offering-1",
+      })
+    ).toThrow();
+  });
+
+  it("throws when amount is zero", () => {
+    expect(() =>
+      enforceInvestmentConsistency({
+        offeringStatus: "published",
+        amount: 0,
+        investorId: "investor-1",
+        offeringId: "offering-1",
+      })
+    ).toThrow();
+  });
+
+  it("throws when amount is negative", () => {
+    expect(() =>
+      enforceInvestmentConsistency({
+        offeringStatus: "published",
+        amount: -100,
+        investorId: "investor-1",
+        offeringId: "offering-1",
+      })
+    ).toThrow();
+  });
+
+  it("throws when investorId is missing", () => {
+    expect(() =>
+      enforceInvestmentConsistency({
+        offeringStatus: "published",
+        amount: 100,
+        investorId: "",
+        offeringId: "offering-1",
+      })
+    ).toThrow();
+  });
+
+  it("throws when offeringId is missing", () => {
+    expect(() =>
+      enforceInvestmentConsistency({
+        offeringStatus: "published",
+        amount: 100,
+        investorId: "investor-1",
+        offeringId: "",
+      })
+    ).toThrow();
+  });
+
+  it("passes all checks for a valid investment", () => {
+    expect(() =>
+      enforceInvestmentConsistency({
+        offeringStatus: "published",
+        amount: 500,
+        investorId: "investor-1",
+        offeringId: "offering-1",
+      })
+    ).not.toThrow();
+  });
+});
+
+
+describe("Request ID Propagation", () => {
+  it("returns X-Request-Id header in response", async () => {
+    const res = await request(app).get("/health");
+    expect(res.headers["x-request-id"]).toBeDefined();
+  });
+
+  it("echoes back the X-Request-Id header when provided", async () => {
+    const res = await request(app)
+      .get("/health")
+      .set("x-request-id", "test-id-123");
+    expect(res.headers["x-request-id"]).toBe("test-id-123");
+  });
+
+  it("generates a UUID when no X-Request-Id is provided", async () => {
+    const res = await request(app).get("/health");
+    expect(res.headers["x-request-id"]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    );
+  });
+
+  it("propagates X-Request-Id on API routes", async () => {
+    const prefix = process.env.API_VERSION_PREFIX ?? "/api/v1";
+    const res = await request(app)
+      .get(`${prefix}/overview`)
+      .set("x-request-id", "propagation-test");
+    expect(res.headers["x-request-id"]).toBe("propagation-test");
+  });
+
+  it("generates different IDs for different requests", async () => {
+    const res1 = await request(app).get("/health");
+    const res2 = await request(app).get("/health");
+    expect(res1.headers["x-request-id"]).not.toBe(
+      res2.headers["x-request-id"]
+    );
+  });
+});
+
+describe('Notification fan-out reliability', () => {
+    const prefix = process.env.API_VERSION_PREFIX ?? '/api/v1';
+
+    it('should forbid non-admin users', async () => {
+        const res = await request(app)
+            .post(`${prefix}/notifications/fanout`)
+            .set('x-user-id', 'u1')
+            .set('x-user-role', 'user')
+            .send({ type: 'announce', title: 'Hello', body: 'world', recipient_ids: ['u1'] });
+
+        expect(res.status).toBe(403);
+        expect(res.body).toHaveProperty('error', 'Forbidden');
+    });
+
+    it('should require idempotency key', async () => {
+        const res = await request(app)
+            .post(`${prefix}/notifications/fanout`)
+            .set('x-user-id', 'admin')
+            .set('x-user-role', 'admin')
+            .send({ type: 'announce', title: 'Hello', body: 'world', recipient_ids: ['u1'] });
+
+        expect(res.status).toBe(400);
+        expect(res.body).toHaveProperty('error', 'Missing x-idempotency-key header');
+    });
+
+    it('should fan out and honor idempotency', async () => {
+        const idempotencyKey = 'fanout-1';
+        const data = { type: 'announce', title: 'Fanout', body: 'Test', recipient_ids: ['u1', 'u2'] };
+
+        const res1 = await request(app)
+            .post(`${prefix}/notifications/fanout`)
+            .set('x-user-id', 'admin')
+            .set('x-user-role', 'admin')
+            .set('x-idempotency-key', idempotencyKey)
+            .send(data);
+
+        expect(res1.status).toBe(200);
+        expect(res1.body).toMatchObject({ requested: 2, delivered: 2, failed: [], idempotent: false });
+
+        const res2 = await request(app)
+            .post(`${prefix}/notifications/fanout`)
+            .set('x-user-id', 'admin')
+            .set('x-user-role', 'admin')
+            .set('x-idempotency-key', idempotencyKey)
+            .send(data);
+
+        expect(res2.status).toBe(200);
+        expect(res2.body).toMatchObject({ requested: 2, delivered: 2, failed: [], idempotent: false, cached: true });
+
+        const user1 = await request(app)
+            .get(`${prefix}/notifications`)
+            .set('x-user-id', 'u1')
+            .set('x-user-role', 'user');
+
+        expect(user1.status).toBe(200);
+        expect(user1.body.notifications).toHaveLength(1);
+
+        const user2 = await request(app)
+            .get(`${prefix}/notifications`)
+            .set('x-user-id', 'u2')
+            .set('x-user-role', 'user');
+
+        expect(user2.status).toBe(200);
+        expect(user2.body.notifications).toHaveLength(1);
+    });
 });
