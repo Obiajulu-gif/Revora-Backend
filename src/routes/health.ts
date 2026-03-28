@@ -1,6 +1,7 @@
 import { NextFunction, Request, Response, Router } from 'express';
 import { Pool } from 'pg';
 import { AppError, Errors } from '../lib/errors';
+import { classifyStellarRPCFailure, StellarRPCFailureClass } from '../index';
 
 export type HealthDependency = 'database' | 'stellar-horizon';
 
@@ -18,10 +19,15 @@ export function mapHealthDependencyFailure(
 ): AppError {
   const details: Record<string, unknown> = { dependency };
 
-  if (dependency === 'stellar-horizon' && typeof cause === 'object' && cause !== null) {
-    const status = (cause as { status?: unknown }).status;
-    if (typeof status === 'number') {
-      details.upstreamStatus = status;
+  if (dependency === 'stellar-horizon') {
+    const failureClass = classifyStellarRPCFailure(cause);
+    details.failureClass = failureClass;
+
+    if (typeof cause === 'object' && cause !== null) {
+      const status = (cause as { status?: unknown }).status;
+      if (typeof status === 'number') {
+        details.upstreamStatus = status;
+      }
     }
   }
 

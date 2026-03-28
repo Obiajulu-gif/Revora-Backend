@@ -1,4 +1,5 @@
 import { Pool, QueryResult } from 'pg';
+import { UniqueConstraintError } from '../../lib/errors';
 
 /**
  * Full user row — password_hash included for internal auth use only.
@@ -29,6 +30,20 @@ export interface UpdateUserInput {
   email?: string;
   password_hash?: string;
   role?: 'startup' | 'investor';
+}
+
+/**
+ * Inspects a caught error from a `pg` query and translates known PostgreSQL
+ * error codes into typed domain errors.  Always throws — never returns.
+ *
+ * - `23505` (`unique_violation`) → {@link UniqueConstraintError} with `field: "email"`
+ * - anything else → re-throws the original error unchanged
+ */
+function handlePgError(err: unknown): never {
+  if ((err as any).code === '23505') {
+    throw new UniqueConstraintError('email');
+  }
+  throw err;
 }
 
 export class UserRepository {
@@ -72,6 +87,14 @@ export class UserRepository {
     return this.findByEmail(email);
   }
 
+  /**
+   * Insert a new user row and return the created record.
+   *
+   * @throws {UniqueConstraintError} When the `email` column violates the
+   *   `UNIQUE` constraint (PostgreSQL error code `23505`).  This can happen
+   *   when two concurrent registrations race past the application-layer
+   *   duplicate check in `RegisterService`.
+   */
   async createUser(input: CreateUserInput): Promise<User> {
     const query = `
       INSERT INTO users (email, password_hash, name, role, created_at, updated_at)
@@ -84,11 +107,33 @@ export class UserRepository {
       input.name ?? null,
       input.role ?? 'startup',
     ];
-    const result: QueryResult<User> = await this.db.query(query, values);
+    let result: QueryResult<User>;
+    try {
+      result = await this.db.query(query, values);
+    } catch (err) {
+      handlePgError(err);
+    }
     if (result.rows.length === 0) throw new Error('Failed to create user');
     return this.mapUser(result.rows[0]);
   }
 
+  /**
+   * Update an existing user's fields and return the updated record.
+   *
+   * @throws {UniqueConstraintError} When the new `email` value already exists
+   *   in the `users` table for a *different* user (PostgreSQL error code
+   *   `23505`).  Callers should catch this and return HTTP 409.
+   *
+   * @remarks
+   * **Same-email no-op**: If the caller passes the same email the user already
+   * holds, PostgreSQL will not raise a uniqueness violation (the row is simply
+   * updated in place with the identical value), so no error is thrown and the
+   * existing user record is returned normally.
+   *
+   * Callers are responsible for passing a normalised (lowercased + trimmed)
+   * email so that the database constraint and the application-layer check
+   * operate on the same canonical form.
+   */
   async updateUser(input: UpdateUserInput): Promise<User> {
     const sets: string[] = [];
     const values: any[] = [];
@@ -122,7 +167,12 @@ export class UserRepository {
       WHERE id = $${idx}
       RETURNING *
     `;
-    const result: QueryResult<User> = await this.db.query(query, values);
+    let result: QueryResult<User>;
+    try {
+      result = await this.db.query(query, values);
+    } catch (err) {
+      handlePgError(err);
+    }
     if (result.rows.length === 0) throw new Error('Failed to update user');
     return this.mapUser(result.rows[0]);
   }
