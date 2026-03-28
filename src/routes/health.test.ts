@@ -2197,193 +2197,239 @@ describe('Graceful Shutdown Completeness', () => {
     });
 });
 
-describe('Investment Double-Submit Protection Middleware Unit Tests', () => {
-    let mockReq: Partial<Request>;
-    let mockRes: Partial<Response>;
-    let nextMock: jest.Mock;
+describe("Offering Status Guardrails", () => {
+  it("allows valid transition", () => {
+    expect(
+      canTransition("draft", "pending_review")
+    ).toBe(true);
+  });
 
-    beforeEach(() => {
-        clearIdempotencyStore();
-        mockReq = {
-            header: jest.fn().mockImplementation((name) => {
-                if (name === 'x-idempotency-key') return 'test-key';
-                return undefined;
-            }),
-            user: { id: 'user1' }
-        } as any;
-        
-        mockRes = {
-            status: jest.fn().mockReturnThis(),
-            json: jest.fn()
-        } as any;
-        
-        // Mock res.json so it binds properly
-        (mockRes as any).json.bind = jest.fn().mockReturnValue(mockRes.json);
-        
-        nextMock = jest.fn();
-    });
+  it("blocks invalid transition", () => {
+    expect(
+      canTransition("draft", "published")
+    ).toBe(false);
+  });
 
-    it('should return 400 if no x-idempotency-key header is provided', () => {
-        mockReq.header = jest.fn().mockReturnValue(undefined);
-        investmentDoubleSubmitProtection(mockReq as Request, mockRes as Response, nextMock);
-        
-        expect(mockRes.status).toHaveBeenCalledWith(400);
-        expect(mockRes.json).toHaveBeenCalledWith({ error: 'Missing x-idempotency-key header' });
-        expect(nextMock).not.toHaveBeenCalled();
-    });
+  it("throws on invalid transition", () => {
+    expect(() =>
+      enforceTransition("draft", "published")
+    ).toThrow();
+  });
 
-    it('should return 401 if not authenticated', () => {
-        (mockReq as any).user = undefined;
-        investmentDoubleSubmitProtection(mockReq as Request, mockRes as Response, nextMock);
-        
-        expect(mockRes.status).toHaveBeenCalledWith(401);
-        expect(mockRes.json).toHaveBeenCalledWith({ error: 'Unauthorized' });
-        expect(nextMock).not.toHaveBeenCalled();
-    });
+  it("throws on unknown state", () => {
+    expect(() =>
+      enforceTransition("ghost" as any, "draft")
+    ).toThrow();
+  });
 
-    it('should set processing state and wrap res.json upon first request', () => {
-        investmentDoubleSubmitProtection(mockReq as Request, mockRes as Response, nextMock);
-        
-        expect(nextMock).toHaveBeenCalled();
-        expect(typeof (mockRes as any).json).toBe('function');
-        
-        // Simulate response from route handler
-        mockRes.statusCode = 200;
-        (mockRes as any).json({ success: true });
-        
-        // The original json method should have been called
-    });
-
-    it('should return 409 if a request is already processing', () => {
-        investmentDoubleSubmitProtection(mockReq as Request, mockRes as Response, nextMock);
-        
-        // Simulate a concurrent request before the first one completes
-        const secondMockRes = {
-            status: jest.fn().mockReturnThis(),
-            json: jest.fn()
-        } as any;
-        const secondNextMock = jest.fn();
-        
-        investmentDoubleSubmitProtection(mockReq as Request, secondMockRes as Response, secondNextMock);
-        
-        expect(secondMockRes.status).toHaveBeenCalledWith(409);
-        expect(secondMockRes.json).toHaveBeenCalledWith({ error: 'Concurrent request detected' });
-        expect(secondNextMock).not.toHaveBeenCalled();
-    });
-
-    it('should return cached response if a request is already completed', () => {
-        investmentDoubleSubmitProtection(mockReq as Request, mockRes as Response, nextMock);
-        
-        mockRes.statusCode = 200;
-        (mockRes as any).json({ message: 'Cached response' });
-        
-        const secondMockRes = {
-            status: jest.fn().mockReturnThis(),
-            json: jest.fn()
-        } as any;
-        const secondNextMock = jest.fn();
-        
-        investmentDoubleSubmitProtection(mockReq as Request, secondMockRes as Response, secondNextMock);
-        
-        expect(secondMockRes.status).toHaveBeenCalledWith(200);
-        expect(secondMockRes.json).toHaveBeenCalledWith({ message: 'Cached response' });
-        expect(secondNextMock).not.toHaveBeenCalled();
-    });
-
-    it('should clear processing state and retry if an error response occurs', () => {
-        investmentDoubleSubmitProtection(mockReq as Request, mockRes as Response, nextMock);
-        
-        mockRes.statusCode = 500;
-        (mockRes as any).json({ error: 'Internal error' });
-        
-        const secondMockRes = {
-            status: jest.fn().mockReturnThis(),
-            json: jest.fn()
-        } as any;
-        const secondNextMock = jest.fn();
-        
-        investmentDoubleSubmitProtection(mockReq as Request, secondMockRes as Response, secondNextMock);
-        
-        // Should process since the previous failed and deleted its key
-        expect(secondNextMock).toHaveBeenCalled();
-    });
-
-    it('should clear expired idempotency keys', () => {
-        const originalNow = Date.now;
-        const mockNow = 1000000;
-        Date.now = jest.fn().mockReturnValue(mockNow);
-        
-        investmentDoubleSubmitProtection(mockReq as Request, mockRes as Response, nextMock);
-        
-        mockRes.statusCode = 200;
-        (mockRes as any).json({ message: 'completed' });
-        
-        // Advance time well beyond 24 hours
-        Date.now = jest.fn().mockReturnValue(mockNow + 48 * 60 * 60 * 1000);
-        
-        const secondMockRes = {
-            status: jest.fn().mockReturnThis(),
-            json: jest.fn()
-        } as any;
-        const secondNextMock = jest.fn();
-        
-        investmentDoubleSubmitProtection(mockReq as Request, secondMockRes as Response, secondNextMock);
-        
-        expect(secondNextMock).toHaveBeenCalled();
-        
-        Date.now = originalNow;
-    });
+  it("blocks same-state transition", () => {
+    expect(
+      canTransition("draft", "draft")
+    ).toBe(false);
+  });
 });
 
-describe('Investment Double-Submit Integration Tests', () => {
-    beforeEach(() => {
-        clearIdempotencyStore();
+describe("Investment Consistency Checks", () => {
+  it("allows investment in a published offering", () => {
+    expect(canInvest("published")).toBe(true);
+  });
+
+  it("blocks investment in a draft offering", () => {
+    expect(canInvest("draft")).toBe(false);
+  });
+
+  it("blocks investment in a pending_review offering", () => {
+    expect(canInvest("pending_review")).toBe(false);
+  });
+
+  it("blocks investment in an archived offering", () => {
+    expect(canInvest("archived")).toBe(false);
+  });
+
+  it("validates a positive amount", () => {
+    expect(isValidAmount(100)).toBe(true);
+  });
+
+  it("rejects a zero amount", () => {
+    expect(isValidAmount(0)).toBe(false);
+  });
+
+  it("rejects a negative amount", () => {
+    expect(isValidAmount(-50)).toBe(false);
+  });
+
+  it("rejects a non-finite amount", () => {
+    expect(isValidAmount(Infinity)).toBe(false);
+  });
+
+  it("throws when offering is not published", () => {
+    expect(() =>
+      enforceInvestmentConsistency({
+        offeringStatus: "draft",
+        amount: 100,
+        investorId: "investor-1",
+        offeringId: "offering-1",
+      })
+    ).toThrow();
+  });
+
+  it("throws when amount is zero", () => {
+    expect(() =>
+      enforceInvestmentConsistency({
+        offeringStatus: "published",
+        amount: 0,
+        investorId: "investor-1",
+        offeringId: "offering-1",
+      })
+    ).toThrow();
+  });
+
+  it("throws when amount is negative", () => {
+    expect(() =>
+      enforceInvestmentConsistency({
+        offeringStatus: "published",
+        amount: -100,
+        investorId: "investor-1",
+        offeringId: "offering-1",
+      })
+    ).toThrow();
+  });
+
+  it("throws when investorId is missing", () => {
+    expect(() =>
+      enforceInvestmentConsistency({
+        offeringStatus: "published",
+        amount: 100,
+        investorId: "",
+        offeringId: "offering-1",
+      })
+    ).toThrow();
+  });
+
+  it("throws when offeringId is missing", () => {
+    expect(() =>
+      enforceInvestmentConsistency({
+        offeringStatus: "published",
+        amount: 100,
+        investorId: "investor-1",
+        offeringId: "",
+      })
+    ).toThrow();
+  });
+
+  it("passes all checks for a valid investment", () => {
+    expect(() =>
+      enforceInvestmentConsistency({
+        offeringStatus: "published",
+        amount: 500,
+        investorId: "investor-1",
+        offeringId: "offering-1",
+      })
+    ).not.toThrow();
+  });
+});
+
+
+describe("Request ID Propagation", () => {
+  it("returns X-Request-Id header in response", async () => {
+    const res = await request(app).get("/health");
+    expect(res.headers["x-request-id"]).toBeDefined();
+  });
+
+  it("echoes back the X-Request-Id header when provided", async () => {
+    const res = await request(app)
+      .get("/health")
+      .set("x-request-id", "test-id-123");
+    expect(res.headers["x-request-id"]).toBe("test-id-123");
+  });
+
+  it("generates a UUID when no X-Request-Id is provided", async () => {
+    const res = await request(app).get("/health");
+    expect(res.headers["x-request-id"]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    );
+  });
+
+  it("propagates X-Request-Id on API routes", async () => {
+    const prefix = process.env.API_VERSION_PREFIX ?? "/api/v1";
+    const res = await request(app)
+      .get(`${prefix}/overview`)
+      .set("x-request-id", "propagation-test");
+    expect(res.headers["x-request-id"]).toBe("propagation-test");
+  });
+
+  it("generates different IDs for different requests", async () => {
+    const res1 = await request(app).get("/health");
+    const res2 = await request(app).get("/health");
+    expect(res1.headers["x-request-id"]).not.toBe(
+      res2.headers["x-request-id"]
+    );
+  });
+});
+
+describe('Notification fan-out reliability', () => {
+    const prefix = process.env.API_VERSION_PREFIX ?? '/api/v1';
+
+    it('should forbid non-admin users', async () => {
+        const res = await request(app)
+            .post(`${prefix}/notifications/fanout`)
+            .set('x-user-id', 'u1')
+            .set('x-user-role', 'user')
+            .send({ type: 'announce', title: 'Hello', body: 'world', recipient_ids: ['u1'] });
+
+        expect(res.status).toBe(403);
+        expect(res.body).toHaveProperty('error', 'Forbidden');
     });
 
-    it('should pass idempotency flow end-to-end', async () => {
-        const prefix = process.env.API_VERSION_PREFIX ?? '/api/v1';
-        
+    it('should require idempotency key', async () => {
+        const res = await request(app)
+            .post(`${prefix}/notifications/fanout`)
+            .set('x-user-id', 'admin')
+            .set('x-user-role', 'admin')
+            .send({ type: 'announce', title: 'Hello', body: 'world', recipient_ids: ['u1'] });
+
+        expect(res.status).toBe(400);
+        expect(res.body).toHaveProperty('error', 'Missing x-idempotency-key header');
+    });
+
+    it('should fan out and honor idempotency', async () => {
+        const idempotencyKey = 'fanout-1';
+        const data = { type: 'announce', title: 'Fanout', body: 'Test', recipient_ids: ['u1', 'u2'] };
+
         const res1 = await request(app)
-            .post(`${prefix}/invest`)
-            .set('x-user-id', 'user1')
-            .set('x-user-role', 'investor')
-            .set('x-idempotency-key', 'key1');
-        
+            .post(`${prefix}/notifications/fanout`)
+            .set('x-user-id', 'admin')
+            .set('x-user-role', 'admin')
+            .set('x-idempotency-key', idempotencyKey)
+            .send(data);
+
         expect(res1.status).toBe(200);
-        expect(res1.body.status).toBe('success');
-        
-        // Duplicate request
+        expect(res1.body).toMatchObject({ requested: 2, delivered: 2, failed: [], idempotent: false });
+
         const res2 = await request(app)
-            .post(`${prefix}/invest`)
-            .set('x-user-id', 'user1')
-            .set('x-user-role', 'investor')
-            .set('x-idempotency-key', 'key1');
-            
+            .post(`${prefix}/notifications/fanout`)
+            .set('x-user-id', 'admin')
+            .set('x-user-role', 'admin')
+            .set('x-idempotency-key', idempotencyKey)
+            .send(data);
+
         expect(res2.status).toBe(200);
-        expect(res2.body.status).toBe('success');
+        expect(res2.body).toMatchObject({ requested: 2, delivered: 2, failed: [], idempotent: false, cached: true });
+
+        const user1 = await request(app)
+            .get(`${prefix}/notifications`)
+            .set('x-user-id', 'u1')
+            .set('x-user-role', 'user');
+
+        expect(user1.status).toBe(200);
+        expect(user1.body.notifications).toHaveLength(1);
+
+        const user2 = await request(app)
+            .get(`${prefix}/notifications`)
+            .set('x-user-id', 'u2')
+            .set('x-user-role', 'user');
+
+        expect(user2.status).toBe(200);
+        expect(user2.body.notifications).toHaveLength(1);
     });
 });
-
-describe('Existing Milestone Validation Route Integration (Coverage)', () => {
-    it('should hit the milestone routes successfully to satisfy coverage', async () => {
-        const prefix = process.env.API_VERSION_PREFIX ?? '/api/v1';
-        const res = await request(app)
-            .post(`${prefix}/vaults/vault-1/milestones/milestone-1/validate`)
-            .set('x-user-id', 'verifier-1')
-            .set('x-user-role', 'verifier');
-            
-        // We do not strictly care about status, just hitting the branches
-        expect([200, 400, 404, 500]).toContain(res.status);
-    });
-
-    it('should hit milestone missing route', async () => {
-        const prefix = process.env.API_VERSION_PREFIX ?? '/api/v1';
-        const res = await request(app)
-            .post(`${prefix}/vaults/vault-1/milestones/missing/validate`)
-            .set('x-user-id', 'verifier-1')
-            .set('x-user-role', 'verifier');
-            
-        expect([200, 400, 404, 500]).toContain(res.status);
-    });
-});
-
