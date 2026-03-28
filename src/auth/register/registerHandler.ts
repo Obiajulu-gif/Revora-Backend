@@ -1,4 +1,5 @@
 import { NextFunction, Request, RequestHandler, Response } from 'express';
+import { UniqueConstraintError } from '../../lib/errors';
 import { DuplicateEmailError, RegisterService } from './registerService';
 import { RegisterRequestBody } from './types';
 
@@ -10,9 +11,15 @@ const MIN_PASSWORD_LENGTH = 12; // Must align with passwordStrength validator
  * Express handler factory for `POST /api/auth/investor/register`.
  *
  * Validates the request body, delegates to `RegisterService`, and returns:
- *   201  { user: { id, email, role } }   – created
- *   400  { error, message }              – validation failure
- *   409  { error, message }              – email already registered
+ *   201  { user: { id, email, role } }   – successful registration
+ *   400  { error, message }              – missing or invalid email or password
+ *   409  { error, message }              – duplicate email: thrown as
+ *                                          `DuplicateEmailError` (application-layer
+ *                                          pre-query check) or `UniqueConstraintError`
+ *                                          (database-layer 23505 violation); both
+ *                                          paths return the same body so callers
+ *                                          cannot distinguish them
+ *   500  (delegated to Express error handler) – unexpected server error
  */
 export const createRegisterHandler = (
   registerService: RegisterService,
@@ -68,7 +75,11 @@ export const createRegisterHandler = (
       });
     } catch (error) {
       if (error instanceof DuplicateEmailError) {
-        res.status(409).json({ error: 'Conflict', message: error.message });
+        res.status(409).json({ error: 'Conflict', message: 'Email already registered' });
+        return;
+      }
+      if (error instanceof UniqueConstraintError) {
+        res.status(409).json({ error: 'Conflict', message: 'Email already registered' });
         return;
       }
       next(error);
