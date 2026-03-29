@@ -124,7 +124,7 @@ export class HorizonClient {
         );
       }
 
-      return await response.json();
+      return (await response.json()) as StellarAccount;
     } catch (error) {
       if (error instanceof Error) {
         throw error;
@@ -181,7 +181,7 @@ export class HorizonClient {
         );
       }
 
-      return await response.json();
+      return (await response.json()) as StellarTransactionsResponse;
     } catch (error) {
       if (error instanceof Error) {
         throw error;

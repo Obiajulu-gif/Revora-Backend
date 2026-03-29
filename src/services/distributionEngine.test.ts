@@ -1,71 +1,132 @@
-import DistributionEngine from './distributionEngine';
+import DistributionEngine, { BalanceRow } from './distributionEngine';
 
-describe('DistributionEngine', () => {
-  // Mock distributionRepo that records created runs and payouts
-  class MockDistributionRepo {
-    runs: any[] = [];
-    payouts: any[] = [];
-    failNext = 0;
-    failCount = 0;
+class MockDistributionRepo {
+  public runs: any[] = [];
+  public payouts: any[] = [];
+  public failNextRunCount = 0;
+  public failNextPayoutCount = 0;
 
-    async createDistributionRun(input: any) {
-      if (this.failNext > 0) {
-        this.failNext--;
-        this.failCount++;
-        throw new Error('Database error (run)');
-      }
-      const run = { id: `run-${this.runs.length + 1}`, ...input };
-      this.runs.push(run);
-      return run;
+  async createDistributionRun(input: any): Promise<any> {
+    if (this.failNextRunCount > 0) {
+      this.failNextRunCount -= 1;
+      throw new Error('Database error (run)');
     }
 
-    async createPayout(input: any) {
-      if (this.failNext > 0) {
-        this.failNext--;
-        this.failCount++;
-        throw new Error('Database error (payout)');
-      }
-      const p = { id: `p-${this.payouts.length + 1}`, ...input };
-      this.payouts.push(p);
-      return p;
+    const run = { id: `run-${this.runs.length + 1}`, ...input };
+    this.runs.push(run);
+    return run;
+  }
+
+  async createPayout(input: any): Promise<any> {
+    if (this.failNextPayoutCount > 0) {
+      this.failNextPayoutCount -= 1;
+      throw new Error('Database error (payout)');
     }
+
+    const payout = { id: `p-${this.payouts.length + 1}`, ...input };
+    this.payouts.push(payout);
+    return payout;
+  }
+}
+
+class MockBalanceProvider {
+  constructor(private readonly balances: BalanceRow[]) {}
+
+  async getBalances(_offeringId: string, _period: { start: Date; end: Date }): Promise<BalanceRow[]> {
+    return this.balances;
   }
 }
 
 describe('DistributionEngine', () => {
-  it('prorates payouts, preserves totals across rounding, and errors on zero balance', async () => {
-  // Test 1: simple proration
-  const distRepo1 = new MockDistributionRepo();
-  const balances1 = [
-    { investor_id: 'i1', balance: 70 },
-    { investor_id: 'i2', balance: 30 },
-  ];
-  const engine1 = new DistributionEngine(null, distRepo1, new MockBalanceProvider(balances1));
-  const res1 = await engine1.distribute('off-1', { start: new Date(), end: new Date() }, 100);
-  assert(res1.payouts.length === 2);
-  const a1 = res1.payouts.find((p) => p.investor_id === 'i1')!;
-  const a2 = res1.payouts.find((p) => p.investor_id === 'i2')!;
-  assert(a1.amount === '70.00', `expected 70.00 got ${a1.amount}`);
-  assert(a2.amount === '30.00', `expected 30.00 got ${a2.amount}`);
+  it('prorates payouts correctly', async () => {
+    const repo = new MockDistributionRepo();
+    const balances = [
+      { investor_id: 'i1', balance: 70 },
+      { investor_id: 'i2', balance: 30 },
+    ];
 
-  // Test 2: rounding / equality
-  const distRepo2 = new MockDistributionRepo();
-  const balances2 = [{ investor_id: 'i1', balance: 1 }, { investor_id: 'i2', balance: 1 }, { investor_id: 'i3', balance: 1 }];
-  const engine2 = new DistributionEngine(null, distRepo2, new MockBalanceProvider(balances2));
-  const res2 = await engine2.distribute('off-2', { start: new Date(), end: new Date() }, 100);
-  // sum check
-  const sum = res2.payouts.reduce((s, p) => s + Number(p.amount), 0);
-  assert(Math.abs(sum - 100) < 0.0001, `expected sum 100 got ${sum}`);
+    const engine = new DistributionEngine(
+      null,
+      repo,
+      new MockBalanceProvider(balances),
+      { maxRetries: 1, initialDelayMs: 0 },
+    );
 
-  // Test 3: zero total balance -> should throw
-  const distRepo3 = new MockDistributionRepo();
-  const engine3 = new DistributionEngine(null, distRepo3, new MockBalanceProvider([{ investor_id: 'i1', balance: 0 }]));
-  let threw = false;
-  try {
-    await engine3.distribute('off-3', { start: new Date(), end: new Date() }, 50);
-  } catch (e) {
-    threw = true;
-  }
-  assert(threw, 'expected error when total balance is zero');
+    const result = await engine.distribute(
+      'off-1',
+      { start: new Date('2026-01-01'), end: new Date('2026-01-31') },
+      100,
+    );
+
+    expect(result.payouts).toEqual([
+      { investor_id: 'i1', amount: '70.00' },
+      { investor_id: 'i2', amount: '30.00' },
+    ]);
+    expect(repo.runs).toHaveLength(1);
+    expect(repo.payouts).toHaveLength(2);
+  });
+
+  it('preserves payout total after rounding', async () => {
+    const repo = new MockDistributionRepo();
+    const balances = [
+      { investor_id: 'i1', balance: 1 },
+      { investor_id: 'i2', balance: 1 },
+      { investor_id: 'i3', balance: 1 },
+    ];
+
+    const engine = new DistributionEngine(
+      null,
+      repo,
+      new MockBalanceProvider(balances),
+      { maxRetries: 1, initialDelayMs: 0 },
+    );
+
+    const result = await engine.distribute(
+      'off-2',
+      { start: new Date('2026-02-01'), end: new Date('2026-02-28') },
+      100,
+    );
+
+    const sum = result.payouts.reduce((acc, item) => acc + Number(item.amount), 0);
+    expect(sum).toBeCloseTo(100, 2);
+  });
+
+  it('throws when total balance is zero', async () => {
+    const repo = new MockDistributionRepo();
+    const engine = new DistributionEngine(
+      null,
+      repo,
+      new MockBalanceProvider([{ investor_id: 'i1', balance: 0 }]),
+      { maxRetries: 1, initialDelayMs: 0 },
+    );
+
+    await expect(
+      engine.distribute(
+        'off-3',
+        { start: new Date('2026-03-01'), end: new Date('2026-03-31') },
+        50,
+      ),
+    ).rejects.toThrow('Total balance must be > 0 to distribute revenue');
+  });
+
+  it('retries transient run creation failures', async () => {
+    const repo = new MockDistributionRepo();
+    repo.failNextRunCount = 1;
+
+    const engine = new DistributionEngine(
+      null,
+      repo,
+      new MockBalanceProvider([{ investor_id: 'i1', balance: 100 }]),
+      { maxRetries: 2, initialDelayMs: 0, backoffFactor: 1 },
+    );
+
+    const result = await engine.distribute(
+      'off-4',
+      { start: new Date('2026-04-01'), end: new Date('2026-04-30') },
+      20,
+    );
+
+    expect(result.distributionRun.id).toBe('run-1');
+    expect(result.payouts).toEqual([{ investor_id: 'i1', amount: '20.00' }]);
   });
 });

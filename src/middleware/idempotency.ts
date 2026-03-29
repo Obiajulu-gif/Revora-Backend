@@ -4,6 +4,7 @@ export interface IdempotencyRecord {
   status: number;
   body: string;
   contentType?: string;
+  fingerprint?: string;
   createdAt: Date;
 }
 
@@ -76,6 +77,7 @@ export interface IdempotencyMiddlewareOptions {
   headerName?: string;
   methods?: string[];
   shouldStoreResponse?: (statusCode: number) => boolean;
+  fingerprint?: (req: Request) => string;
 }
 
 const DEFAULT_METHODS = ['POST', 'PATCH'];
@@ -135,6 +137,7 @@ export function createIdempotencyMiddleware(
   );
   const shouldStoreResponse =
     options.shouldStoreResponse ?? ((statusCode: number) => statusCode < 500);
+  const fingerprint = options.fingerprint;
 
   return async (req: Request, res: Response, next: NextFunction) => {
     if (!methods.has(req.method.toUpperCase())) {
@@ -148,8 +151,22 @@ export function createIdempotencyMiddleware(
       return;
     }
 
+    const requestFingerprint = fingerprint?.(req);
     const checkResult = await store.checkAndReserve(key);
     if (checkResult.state === 'cached') {
+      if (
+        requestFingerprint &&
+        checkResult.record.fingerprint &&
+        checkResult.record.fingerprint !== requestFingerprint
+      ) {
+        res.setHeader('Idempotency-Status', 'conflict');
+        res.status(409).json({
+          error:
+            'Idempotency key reuse with a different request payload is not allowed.',
+        });
+        return;
+      }
+
       replayResponse(res, checkResult.record);
       return;
     }
@@ -189,6 +206,7 @@ export function createIdempotencyMiddleware(
         status: res.statusCode,
         body: responseBody,
         contentType,
+        fingerprint: requestFingerprint,
         createdAt: new Date(),
       };
       void store.save(key, record);

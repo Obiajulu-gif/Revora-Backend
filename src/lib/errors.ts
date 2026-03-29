@@ -69,6 +69,21 @@ export class AppError extends Error {
   }
 }
 
+/**
+ * Thrown when a database unique constraint is violated.
+ * Used by repositories to map PostgreSQL 23505 errors into domain-friendly errors.
+ */
+export class UniqueConstraintError extends Error {
+  readonly field: string;
+
+  constructor(field: string, message?: string) {
+    super(message ?? `${field} already exists`);
+    this.name = 'UniqueConstraintError';
+    this.field = field;
+    Object.setPrototypeOf(this, UniqueConstraintError.prototype);
+  }
+}
+
 export function createError(
   code: ErrorCode,
   message: string,
