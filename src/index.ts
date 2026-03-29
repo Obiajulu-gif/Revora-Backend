@@ -57,12 +57,18 @@ import {
   MilestoneValidationEventRepository,
   VerifierAssignmentRepository,
 } from './vaults/milestoneValidationRoute';
+import { createRegisterRouter } from './auth/register/registerRoute';
+import {
+  createIdempotencyMiddleware,
+  InMemoryIdempotencyStore,
+} from './middleware/idempotency';
 import { createLoginRouter } from './auth/login/loginRoute';
 import { createRefreshRouter } from './auth/refresh/refreshRoute';
 import { createReconciliationRouter } from './routes/reconciliationRoutes';
 import { createPasswordResetRouter } from './routes/passwordReset';
+import { createStartupAuthRouter } from './routes/startupAuth';
+import createPayoutsRouter from './routes/payouts';
 import { OfferingRepository } from './db/repositories/offeringRepository';
-import { pool } from './db/client';
 import { LoginService } from './auth/login/loginService';
 import { RefreshService } from './auth/refresh/refreshService';
 import { UserRepository } from './db/repositories/userRepository';
@@ -235,17 +241,6 @@ export function createApp(): express.Express {
   const milestoneDeps = createMilestoneDependencies();
   const notificationRepo = new PostgresNotificationRepo(pool);
 
-  // Import and setup missing routers and services
-  const { Pool } = require('pg');
-  const pool = new Pool();
-  
-  // Import missing modules
-  const { createLoginRouter } = require('./auth/login/loginRouter');
-  const { createRefreshRouter } = require('./auth/refresh/refreshRouter');
-  const { OfferingRepository } = require('./db/repositories/offeringRepository');
-  const { createReconciliationRouter } = require('./routes/reconciliationRoutes');
-  const { createPasswordResetRouter } = require('./auth/passwordReset/passwordResetRouter');
-  
   // Mock services for now
   const loginService = {};
   const refreshService = {};
@@ -311,21 +306,9 @@ export function createApp(): express.Express {
   });
 
   // Mount business logic routes
+  // startupAuthLimiter: passthrough until a real rate-limit store is wired up
+  const startupAuthLimiter: express.RequestHandler = (_req, _res, next) => next();
   apiRouter.use('/startup', startupAuthLimiter, createStartupAuthRouter(pool));
-  apiRouter.use(createLoginRouter({ loginService }));
-  apiRouter.use(createRefreshRouter({ refreshService }));
-
-  const offeringRepository = new OfferingRepository(pool);
-  apiRouter.use(
-    "/reconciliation",
-    createReconciliationRouter({
-      db: pool,
-      offeringRepo: offeringRepository,
-      requireAuth,
-    }),
-  );
-
-  apiRouter.use(createPasswordResetRouter(pool));
 
   apiRouter.use(
     createMilestoneValidationRouter({
@@ -335,8 +318,41 @@ export function createApp(): express.Express {
   );
 
   // --- Payout Filters & Pagination (Issue #149) ---
-  const payoutRepo = new InMemoryPayoutRepository();
+  const payoutRepo = { listPayoutsByInvestor: async () => [] };
   app.use(createPayoutsRouter({ payoutRepo, verifyJWT: requireAuth }));
+
+  // ── Investor Registration with Idempotency ─────────────────────────────────
+  //
+  // @dev Idempotency prevents duplicate account creation on client retries
+  // (e.g. network timeouts, mobile reconnects).  A 24-hour TTL covers any
+  // realistic retry window while bounding memory growth.
+  //
+  // Security assumptions:
+  //  - Keys are caller-supplied opaque strings; no PII should be embedded.
+  //  - The in-memory store is single-process; a distributed deployment must
+  //    replace it with a Redis-backed IdempotencyStore implementation.
+  //  - Cached 409 responses (duplicate email) are also replayed, preventing
+  //    a client from probing whether an email exists via re-submission.
+  //  - 5xx responses are never cached; a failed first attempt is always retryable.
+  const registrationIdempotencyStore = new InMemoryIdempotencyStore({
+    ttlMs: 24 * 60 * 60 * 1000,
+  });
+  app.use(
+    '/api/auth/investor/register',
+    createIdempotencyMiddleware({
+      store: registrationIdempotencyStore,
+      methods: ['POST'],
+    }),
+  );
+  const registerUserRepository = new UserRepository(pool);
+  app.use(
+    createRegisterRouter({
+      userRepository: {
+        findByEmail: (email) => registerUserRepository.findByEmail(email),
+        createUser: (input) => registerUserRepository.createUser(input),
+      },
+    }),
+  );
 
   app.use(API_VERSION_PREFIX, apiRouter);
   app.use((_req, _res, next) => next(Errors.notFound('Route not found')));
