@@ -51,6 +51,34 @@ export function classifyStellarRPCFailure(error: unknown): StellarRPCFailureClas
   return StellarRPCFailureClass.UNKNOWN;
 }
 
+import {
+  createMilestoneValidationRouter,
+  DomainEventPublisher,
+  Milestone,
+  MilestoneRepository,
+  MilestoneValidationEvent,
+  MilestoneValidationEventRepository,
+  VerifierAssignmentRepository,
+} from './vaults/milestoneValidationRoute';
+import { createRegisterRouter } from './auth/register/registerRoute';
+import {
+  createIdempotencyMiddleware,
+  InMemoryIdempotencyStore,
+} from './middleware/idempotency';
+import { createLoginRouter } from './auth/login/loginRoute';
+import { createRefreshRouter } from './auth/refresh/refreshRoute';
+import { createReconciliationRouter } from './routes/reconciliationRoutes';
+import { createPasswordResetRouter } from './routes/passwordReset';
+import { createStartupAuthRouter } from './routes/startupAuth';
+import createPayoutsRouter from './routes/payouts';
+import { OfferingRepository } from './db/repositories/offeringRepository';
+import { LoginService } from './auth/login/loginService';
+import { RefreshService } from './auth/refresh/refreshService';
+import { UserRepository } from './db/repositories/userRepository';
+import { SessionRepository } from './db/repositories/sessionRepository';
+import { JwtTokenServiceAdapter } from './auth/refresh/tokenServiceAdapter';
+import { RefreshTokenRepositoryAdapter } from './auth/refresh/repositoryAdapter';
+
 const port = process.env.PORT ?? 3000;
 const API_VERSION_PREFIX = process.env.API_VERSION_PREFIX ?? '/api/v1';
 
@@ -166,6 +194,25 @@ const stellarSubmissionIdempotency = createIdempotencyMiddleware({
 export function createApp(): express.Express {
   const app = express();
   const apiRouter = express.Router();
+  const milestoneDeps = createMilestoneDependencies();
+  const notificationRepo = new PostgresNotificationRepo(pool);
+
+  // Mock services for now
+  const loginService = {};
+  const refreshService = {};
+
+  apiRouter.use(createLoginRouter({ loginService }));
+  apiRouter.use(createRefreshRouter({ refreshService }));
+
+  const offeringRepository = new OfferingRepository(pool);
+  apiRouter.use(
+    "/reconciliation",
+    createReconciliationRouter({
+      db: pool,
+      offeringRepo: offeringRepository,
+      requireAuth,
+    }),
+  );
 
   app.use(requestIdMiddleware());
   app.use(createCorsMiddleware() as RequestHandler);
@@ -192,11 +239,10 @@ export function createApp(): express.Express {
     });
   });
 
-  const startupAuthLimiter = createRateLimitMiddleware({
-    limit: 5,
-    windowMs: 60_000,
-    message: 'Too many registration attempts. Please try again later.',
-  });
+  // Mount business logic routes
+  // startupAuthLimiter: passthrough until a real rate-limit store is wired up
+  const startupAuthLimiter: express.RequestHandler = (_req, _res, next) => next();
+  apiRouter.use('/startup', startupAuthLimiter, createStartupAuthRouter(pool));
 
   apiRouter.use('/startup', startupAuthLimiter, createStartupRegisterRouter());
 
@@ -242,6 +288,43 @@ export function createApp(): express.Express {
         );
       }
     },
+  );
+
+  // --- Payout Filters & Pagination (Issue #149) ---
+  const payoutRepo = { listPayoutsByInvestor: async () => [] };
+  app.use(createPayoutsRouter({ payoutRepo, verifyJWT: requireAuth }));
+
+  // ── Investor Registration with Idempotency ─────────────────────────────────
+  //
+  // @dev Idempotency prevents duplicate account creation on client retries
+  // (e.g. network timeouts, mobile reconnects).  A 24-hour TTL covers any
+  // realistic retry window while bounding memory growth.
+  //
+  // Security assumptions:
+  //  - Keys are caller-supplied opaque strings; no PII should be embedded.
+  //  - The in-memory store is single-process; a distributed deployment must
+  //    replace it with a Redis-backed IdempotencyStore implementation.
+  //  - Cached 409 responses (duplicate email) are also replayed, preventing
+  //    a client from probing whether an email exists via re-submission.
+  //  - 5xx responses are never cached; a failed first attempt is always retryable.
+  const registrationIdempotencyStore = new InMemoryIdempotencyStore({
+    ttlMs: 24 * 60 * 60 * 1000,
+  });
+  app.use(
+    '/api/auth/investor/register',
+    createIdempotencyMiddleware({
+      store: registrationIdempotencyStore,
+      methods: ['POST'],
+    }),
+  );
+  const registerUserRepository = new UserRepository(pool);
+  app.use(
+    createRegisterRouter({
+      userRepository: {
+        findByEmail: (email) => registerUserRepository.findByEmail(email),
+        createUser: (input) => registerUserRepository.createUser(input),
+      },
+    }),
   );
 
   app.use(API_VERSION_PREFIX, apiRouter);

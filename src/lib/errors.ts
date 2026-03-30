@@ -129,6 +129,17 @@ export const Errors = {
     ),
 };
 
+/** Thrown when a database unique constraint (e.g. duplicate email) is violated. */
+export class UniqueConstraintError extends Error {
+  readonly field: string;
+  constructor(field: string) {
+    super(`Unique constraint violated on field: ${field}`);
+    this.name = 'UniqueConstraintError';
+    this.field = field;
+    Object.setPrototypeOf(this, UniqueConstraintError.prototype);
+  }
+}
+
 export function throwError(
   code: ErrorCode,
   message: string,
