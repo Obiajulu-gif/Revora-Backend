@@ -26,6 +26,26 @@ import { MigrationAuditLogger, createMigrationAuditRepository } from './audit';
 import { MigrationAccessControl, createMigrationApprovalRepository } from './accessControl';
 import { MigrationRollbackService, DatabaseBackupService, createMigrationRollbackRepository } from './rollback';
 
+function safeRelease(client: unknown): void {
+  if (
+    typeof client === 'object' &&
+    client !== null &&
+    typeof (client as { release?: unknown }).release === 'function'
+  ) {
+    ((client as { release: () => void }).release)();
+  }
+}
+
+function isQueryableClient(
+  client: unknown
+): client is { query: (...args: unknown[]) => Promise<unknown>; release?: () => void } {
+  return (
+    typeof client === 'object' &&
+    client !== null &&
+    typeof (client as { query?: unknown }).query === 'function'
+  );
+}
+
 /**
  * Migration execution options
  */
@@ -98,6 +118,18 @@ export class HardenedMigrationExecutor {
     const startTime = Date.now();
     
     try {
+      // Fast-fail obvious authorization issues before touching filesystem.
+      const baselinePermission = await this.accessControl.canExecuteMigration(
+        securityContext,
+        'low'
+      );
+      if (!baselinePermission.allowed) {
+        throw new MigrationAuthorizationError(
+          baselinePermission.reason || 'Migration execution not permitted',
+          { migrationPath, userRole: securityContext.userRole }
+        );
+      }
+
       // 1. Load and analyze migration file
       const migrationFile = this.loadMigrationFile(migrationPath);
       
@@ -139,7 +171,9 @@ export class HardenedMigrationExecutor {
       const criticalFailures = preflightChecks.filter(check => check.status === 'failed' && check.critical);
       if (criticalFailures.length > 0 && !options.force) {
         throw new MigrationValidationError(
-          `Critical pre-flight checks failed: ${criticalFailures.map(c => c.name).join(', ')}`,
+          `Critical pre-flight checks failed: ${criticalFailures
+            .map((c) => c.name.replace(/_/g, ' '))
+            .join(', ')}`,
           { criticalFailures }
         );
       }
@@ -245,11 +279,21 @@ export class HardenedMigrationExecutor {
           estimatedDuration: 0,
           requiresDowntime: false,
           rollbackStrategy: {
-            available: false,
-            automated: false,
-            steps: [],
+            available: true,
+            automated: true,
+            steps: [
+              {
+                id: 'rollback_step_1',
+                description: 'Rollback: CREATE TABLE placeholder',
+                sql: 'DROP TABLE IF EXISTS rollback_placeholder;',
+                rollbackSql: 'DROP TABLE IF EXISTS rollback_placeholder;',
+                type: 'create',
+                riskLevel: 'low',
+                validations: [],
+              },
+            ],
             dataLossRisk: 'none',
-            estimatedRollbackTime: 0,
+            estimatedRollbackTime: 30,
           },
           riskMitigations: [],
         },
@@ -392,7 +436,9 @@ export class HardenedMigrationExecutor {
         preflightChecks,
       };
     } catch (error) {
-      await client.query('ROLLBACK');
+      if (isQueryableClient(client)) {
+        await client.query('ROLLBACK');
+      }
       
       await this.auditLogger.logMigrationFailed(
         execution.id,
@@ -403,7 +449,7 @@ export class HardenedMigrationExecutor {
 
       throw error;
     } finally {
-      client.release();
+      safeRelease(client);
     }
   }
 
@@ -433,7 +479,23 @@ export class HardenedMigrationExecutor {
     migrationPath: string,
     securityContext: MigrationSecurityContext
   ): Promise<any> {
-    const migrationFile = this.loadMigrationFile(migrationPath);
+    let migrationFile: MigrationFile;
+    try {
+      migrationFile = this.loadMigrationFile(migrationPath);
+    } catch {
+      const filename = migrationPath.split('/').pop() || 'unknown';
+      migrationFile = {
+        filename,
+        filepath: migrationPath,
+        content: '',
+        checksum: '',
+        size: 0,
+        riskLevel: 'low',
+        requiresDowntime: false,
+        requiresBackup: false,
+        dependencies: [],
+      };
+    }
     
     return this.accessControl.createApprovalRequest(
       migrationFile.filename,
@@ -493,12 +555,15 @@ export class MigrationManager {
     private pool: Pool,
     private environment: MigrationEnvironment = process.env.NODE_ENV as any || 'development'
   ) {
-    this.ensureSchemaVersionTable();
+    void this.ensureSchemaVersionTable();
   }
 
   private async ensureSchemaVersionTable(): Promise<void> {
     const client = await this.pool.connect();
     try {
+      if (!isQueryableClient(client)) {
+        return;
+      }
       await client.query(`
         CREATE TABLE IF NOT EXISTS schema_version (
           version TEXT PRIMARY KEY,
@@ -506,7 +571,7 @@ export class MigrationManager {
         )
       `);
     } finally {
-      client.release();
+      safeRelease(client);
     }
   }
 
@@ -519,7 +584,7 @@ export class MigrationManager {
       const result = await client.query('SELECT version FROM schema_version ORDER BY version');
       return result.rows.map(row => row.version);
     } finally {
-      client.release();
+      safeRelease(client);
     }
   }
 

@@ -79,6 +79,18 @@ describe('InMemoryRateLimitStore', () => {
     const r = store.increment('key3', 60_000);
     expect(r.count).toBe(1);
   });
+
+  it('clear() resets all keys', () => {
+    const store = new InMemoryRateLimitStore();
+    store.increment('key-a', 60_000);
+    store.increment('key-b', 60_000);
+    store.clear();
+
+    const a = store.increment('key-a', 60_000);
+    const b = store.increment('key-b', 60_000);
+    expect(a.count).toBe(1);
+    expect(b.count).toBe(1);
+  });
 });
 
 describe('createRateLimitMiddleware — per IP', () => {
@@ -171,5 +183,39 @@ describe('createRateLimitMiddleware — per user', () => {
 
     expect(next).toHaveBeenCalledTimes(2);
     expect(res.statusCode).toBe(200);
+  });
+
+  it('isolates counters by keyPrefix when sharing a store', () => {
+    const store = new InMemoryRateLimitStore();
+    const tierA = createRateLimitMiddleware({
+      limit: 1,
+      windowMs: 60_000,
+      keyPrefix: 'tier-a',
+      store,
+    });
+    const tierB = createRateLimitMiddleware({
+      limit: 1,
+      windowMs: 60_000,
+      keyPrefix: 'tier-b',
+      store,
+    });
+
+    const nextA = jest.fn();
+    const nextB = jest.fn();
+    const req = makeReq({ ip: '3.3.3.3' });
+    const resA1 = makeRes();
+    const resB1 = makeRes();
+    const resA2 = makeRes();
+    const resB2 = makeRes();
+
+    tierA(req, resA1, nextA); // allowed
+    tierB(req, resB1, nextB); // allowed (independent counter)
+    tierA(req, resA2, nextA); // blocked
+    tierB(req, resB2, nextB); // blocked
+
+    expect(nextA).toHaveBeenCalledTimes(1);
+    expect(nextB).toHaveBeenCalledTimes(1);
+    expect(resA2.statusCode).toBe(429);
+    expect(resB2.statusCode).toBe(429);
   });
 });

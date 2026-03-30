@@ -37,13 +37,13 @@ describe('RegisterService', () => {
   {
     const repo = new FakeUserRepository();
     const svc = new RegisterService(repo);
-    const user = await svc.register('Alice@Example.COM', 'StrongSecret123!');
+    const user = await svc.register('Alice@Example.COM', 'Str0ng!Key$9A');
 
     assert(user.id, 'user should have an id');
     assert.strictEqual(user.email, 'alice@example.com', 'email should be lowercased + trimmed');
     assert.strictEqual(user.role, 'investor', 'role must be investor');
 
-    const expectedHash = createHash('sha256').update('StrongSecret123!').digest('hex');
+    const expectedHash = createHash('sha256').update('Str0ng!Key$9A').digest('hex');
     assert.strictEqual(repo.getStoredHash('alice@example.com'), expectedHash, 'password must be SHA-256 hashed');
   }
 
@@ -51,7 +51,7 @@ describe('RegisterService', () => {
   {
     const repo = new FakeUserRepository();
     const svc = new RegisterService(repo);
-    const user = await svc.register('  bob@example.com  ', 'password1');
+    const user = await svc.register('  bob@example.com  ', 'Str0ng!Key$9A');
     assert.strictEqual(user.email, 'bob@example.com', 'leading/trailing spaces must be stripped');
   }
 
@@ -59,11 +59,11 @@ describe('RegisterService', () => {
   {
     const repo = new FakeUserRepository();
     const svc = new RegisterService(repo);
-    await svc.register('carol@example.com', 'password1');
+    await svc.register('carol@example.com', 'Str0ng!Key$9A');
 
     let threw = false;
     try {
-      await svc.register('carol@example.com', 'different-password');
+      await svc.register('carol@example.com', 'An0ther!Strong$2');
     } catch (err) {
       threw = true;
       assert(err instanceof DuplicateEmailError, 'should throw DuplicateEmailError');
@@ -76,11 +76,11 @@ describe('RegisterService', () => {
   {
     const repo = new FakeUserRepository();
     const svc = new RegisterService(repo);
-    await svc.register('Dave@Example.com', 'password1');
+    await svc.register('Dave@Example.com', 'Str0ng!Key$9A');
 
     let threw = false;
     try {
-      await svc.register('dave@example.com', 'password2');
+      await svc.register('dave@example.com', 'An0ther!Strong$2');
     } catch (err) {
       threw = true;
       assert(err instanceof DuplicateEmailError, 'duplicate check is case-insensitive');
@@ -113,7 +113,7 @@ describe('RegisterService', () => {
     const svc = new RegisterService(failRepo);
     let threw = false;
     try {
-      await svc.register('grace@example.com', 'password1');
+      await svc.register('grace@example.com', 'Str0ng!Key$9A');
     } catch (err) {
       threw = true;
       assert(err instanceof Error && err.message === 'DB connection lost');

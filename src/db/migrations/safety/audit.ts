@@ -489,6 +489,12 @@ export const createMigrationAuditRepository = (
   pool?: Pool,
   environment = process.env.NODE_ENV
 ): MigrationAuditRepository => {
+  const injected = (pool as { __migrationAuditRepository?: MigrationAuditRepository } | undefined)
+    ?.__migrationAuditRepository;
+  if (injected) {
+    return injected;
+  }
+
   if (environment === 'production' && pool) {
     return new DatabaseMigrationAuditRepository(pool);
   }

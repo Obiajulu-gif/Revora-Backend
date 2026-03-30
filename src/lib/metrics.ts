@@ -471,14 +471,16 @@ export class MetricsCollector {
    * @returns Parsed name and labels
    */
   private parseMetricKey(key: string): { name: string; labels?: Record<string, string> } {
-    const match = key.match(/^([^{]+)(?:\{(.+)\})?$/);
+    const match = key.match(/^([^{]+)(?:\{([^}]*)\})?$/);
     if (!match) return { name: key };
 
     const name = match[1];
     const labelStr = match[2];
 
+    if (labelStr === undefined) return { name };
+
     // Handle empty labels case: "metric{}"
-    if (!labelStr || labelStr.trim() === '') return { name };
+    if (labelStr.trim() === '') return { name, labels: {} };
 
     const labels: Record<string, string> = {};
     const labelPairs = labelStr.match(/(\w+)="([^"]*)"/g);
@@ -523,7 +525,9 @@ export class MetricsCollector {
       }
       lines.push(`# TYPE ${name} counter`);
       
-      const labelStr = labels ? `{${Object.entries(labels).map(([k, v]) => `${k}="${v}"`).join(',')}}` : '';
+      const labelStr = labels && Object.keys(labels).length > 0
+        ? `{${Object.entries(labels).map(([k, v]) => `${k}="${v}"`).join(',')}}`
+        : '';
       lines.push(`${name}${labelStr} ${value} ${timestamp}`);
     }
 
@@ -537,7 +541,9 @@ export class MetricsCollector {
       }
       lines.push(`# TYPE ${name} gauge`);
       
-      const labelStr = labels ? `{${Object.entries(labels).map(([k, v]) => `${k}="${v}"`).join(',')}}` : '';
+      const labelStr = labels && Object.keys(labels).length > 0
+        ? `{${Object.entries(labels).map(([k, v]) => `${k}="${v}"`).join(',')}}`
+        : '';
       lines.push(`${name}${labelStr} ${value} ${timestamp}`);
     }
 

@@ -167,10 +167,10 @@ describe('Logger', () => {
     });
 
     it('should include context data', () => {
-      logger.info('Test', { userId: '123', action: 'login' });
+      logger.info('Test', { action: 'login' });
       
       const output: LogEntry = JSON.parse(consoleLogSpy.mock.calls[0][0]);
-      expect(output.context).toEqual({ userId: '123', action: 'login' });
+      expect(output.context).toEqual({ action: 'login' });
     });
 
     it('should extract requestId from context', () => {

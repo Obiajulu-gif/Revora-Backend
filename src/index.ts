@@ -4,9 +4,8 @@ import morgan from 'morgan';
 import { closePool, dbHealth, pool, query as dbQuery } from './db/client';
 import { createCorsMiddleware } from './middleware/cors';
 import { errorHandler } from './middleware/errorHandler';
-import { createIdempotencyMiddleware } from './middleware/idempotency';
 import { requestIdMiddleware } from './middleware/requestId';
-import { createRateLimitMiddleware } from './middleware/rateLimit';
+import { createStartupAuthTierLimiter } from './middleware/startupAuthRateTierPolicy';
 import { Errors } from './lib/errors';
 import { createHealthRouter } from './routes/health';
 import { StellarSubmissionService } from './services/stellarSubmissionService';
@@ -168,10 +167,17 @@ const requireAuth: RequestHandler = (
   next();
 };
 
+const startupAuthTierLimiter = createStartupAuthTierLimiter();
+const startupAuthLimiter = startupAuthTierLimiter.middleware;
+
 let stellarSubmissionService: StellarSubmissionService | null = null;
 
 function resetStellarSubmissionService(): void {
   stellarSubmissionService = null;
+}
+
+function resetStartupAuthRateLimitState(): void {
+  startupAuthTierLimiter.reset();
 }
 
 function getStellarSubmissionService(): StellarSubmissionService {
@@ -194,8 +200,6 @@ const stellarSubmissionIdempotency = createIdempotencyMiddleware({
 export function createApp(): express.Express {
   const app = express();
   const apiRouter = express.Router();
-  const milestoneDeps = createMilestoneDependencies();
-  const notificationRepo = new PostgresNotificationRepo(pool);
 
   // Mock services for now
   const loginService = {};
@@ -215,6 +219,7 @@ export function createApp(): express.Express {
   );
 
   app.use(requestIdMiddleware());
+  app.set('trust proxy', 1);
   app.use(createCorsMiddleware() as RequestHandler);
   app.use(express.json());
   app.use(morgan('dev'));
@@ -240,8 +245,6 @@ export function createApp(): express.Express {
   });
 
   // Mount business logic routes
-  // startupAuthLimiter: passthrough until a real rate-limit store is wired up
-  const startupAuthLimiter: express.RequestHandler = (_req, _res, next) => next();
   apiRouter.use('/startup', startupAuthLimiter, createStartupAuthRouter(pool));
 
   apiRouter.use('/startup', startupAuthLimiter, createStartupRegisterRouter());
@@ -338,6 +341,8 @@ export const __test = {
   stableSerialize,
   isValidStellarPublicKey,
   isValidStellarAmount,
+  resolveStartupAuthRateTier: startupAuthTierLimiter.resolveTier,
+  resetStartupAuthRateLimitState,
   resetStellarSubmissionService,
 };
 

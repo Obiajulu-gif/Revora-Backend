@@ -31,18 +31,18 @@ class InMemoryUserRepository implements UserRepository {
 
 class InMemorySessionRepository implements SessionRepository {
     private sessions = new Map<string, { userId: string; tokenHash: string; expiresAt: Date }>();
-    private counter = 0;
 
-    async createSession(userId: string): Promise<string> {
-        const id = `session-${++this.counter}`;
-        this.sessions.set(id, { userId, tokenHash: '', expiresAt: new Date(0) });
-        return id;
-    }
-
-    async setSessionMetadata(sessionId: string, tokenHash: string, expiresAt: Date): Promise<void> {
-        const existing = this.sessions.get(sessionId);
-        if (!existing) throw new Error('Session not found');
-        this.sessions.set(sessionId, { ...existing, tokenHash, expiresAt });
+    async createSession(input: {
+      id: string;
+      userId: string;
+      tokenHash: string;
+      expiresAt: Date;
+    }): Promise<void> {
+        this.sessions.set(input.id, {
+          userId: input.userId,
+          tokenHash: input.tokenHash,
+          expiresAt: input.expiresAt,
+        });
     }
 
     getSession(sessionId: string): { userId: string; tokenHash: string; expiresAt: Date } | undefined {
@@ -54,9 +54,15 @@ class FakeJwtIssuer implements JwtIssuer {
   lastPayload: { userId: string; sessionId: string; role: UserRole } | null =
     null;
 
-  sign(payload: { userId: string; sessionId: string; role: UserRole }): string {
+  sign(payload: { userId: string; sessionId: string; role: UserRole }): {
+    accessToken: string;
+    refreshToken: string;
+  } {
     this.lastPayload = payload;
-    return `fake-jwt-for-${payload.userId}-${payload.sessionId}`;
+    return {
+      accessToken: `fake-access-for-${payload.userId}-${payload.sessionId}`,
+      refreshToken: `fake-refresh-for-${payload.userId}-${payload.sessionId}`,
+    };
   }
 }
 
@@ -122,7 +128,8 @@ describe('login routes', () => {
     expect(res.statusCode).toBe(200);
 
     const body = res.payload as any;
-    expect(body.token).toBe('fake-jwt-for-user-1-session-1');
+    expect(body.accessToken).toContain('fake-access-for-user-1-');
+    expect(body.refreshToken).toContain('fake-refresh-for-user-1-');
     expect(body.user.id).toBe('user-1');
     expect(body.user.email).toBe('founder@startup.io');
     expect(body.user.role).toBe('startup');
@@ -131,7 +138,9 @@ describe('login routes', () => {
     expect(jwtIssuer.lastPayload).not.toBeNull();
     expect(jwtIssuer.lastPayload!.userId).toBe('user-1');
     expect(jwtIssuer.lastPayload!.role).toBe('startup');
-    expect(jwtIssuer.lastPayload!.sessionId).toMatch(/^session-/);
+    expect(jwtIssuer.lastPayload!.sessionId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
   });
 
   it('successful login for investor user returns 200 with token and user', async () => {
@@ -226,7 +235,7 @@ describe('login routes', () => {
   });
 
   it('login creates a new session for each successful login', async () => {
-    const { userRepo, sessionRepo, handler } = createFixture();
+    const { userRepo, sessionRepo, handler, jwtIssuer } = createFixture();
 
     userRepo.add({
       id: 'user-1',
@@ -243,7 +252,9 @@ describe('login routes', () => {
       noop,
     );
     expect(res1.statusCode).toBe(200);
-    expect(sessionRepo.getSession('session-1')).toBeTruthy();
+    const firstSessionId = jwtIssuer.lastPayload?.sessionId;
+    expect(firstSessionId).toBeTruthy();
+    expect(firstSessionId && sessionRepo.getSession(firstSessionId)).toBeTruthy();
 
     // Second login — should get a fresh session
     const res2 = new MockResponse();
@@ -253,10 +264,12 @@ describe('login routes', () => {
       noop,
     );
     expect(res2.statusCode).toBe(200);
-    expect(sessionRepo.getSession('session-2')).toBeTruthy();
+    const secondSessionId = jwtIssuer.lastPayload?.sessionId;
+    expect(secondSessionId).toBeTruthy();
+    expect(secondSessionId && sessionRepo.getSession(secondSessionId)).toBeTruthy();
 
     // Tokens should differ (different sessions)
-    expect((res1.payload as any).token).not.toBe((res2.payload as any).token);
+    expect((res1.payload as any).accessToken).not.toBe((res2.payload as any).accessToken);
   });
 
   it('LoginService.login returns null for unknown user (unit)', async () => {

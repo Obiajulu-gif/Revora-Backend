@@ -6,7 +6,7 @@
  */
 
 import { createHash } from 'crypto';
-import { readFileSync, statSync } from 'fs';
+import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
   MigrationFile,
@@ -154,8 +154,10 @@ export const SQL_PATTERNS: SQLPattern[] = [
 export class MigrationFileAnalyzer {
   analyzeFile(filepath: string, filename: string): MigrationFile {
     const content = readFileSync(filepath, 'utf8');
-    const stats = statSync(filepath);
     const checksum = this.calculateChecksum(content);
+    // Derive size from the loaded content to keep analysis deterministic in tests
+    // where fs stat mocks can diverge from readFileSync content.
+    const size = Buffer.byteLength(content, 'utf8');
 
     const riskAnalysis = this.analyzeRisk(content);
     const dependencies = this.extractDependencies(content);
@@ -165,7 +167,7 @@ export class MigrationFileAnalyzer {
       filepath,
       content,
       checksum,
-      size: stats.size,
+      size,
       riskLevel: riskAnalysis.maxRiskLevel,
       requiresDowntime: riskAnalysis.requiresDowntime,
       requiresBackup: riskAnalysis.requiresBackup,
@@ -480,8 +482,6 @@ export class PreflightValidator {
   }
 
   private async checkDestructiveOperations(migration: MigrationFile): Promise<PreflightCheckResult> {
-    const analyzer = new MigrationFileAnalyzer();
-    const tempFile = analyzer.analyzeFile(migration.filepath, migration.filename);
     const destructivePatterns = SQL_PATTERNS.filter(pattern => 
       pattern.pattern.test(migration.content) && pattern.destructive
     );
@@ -711,6 +711,7 @@ export class ExecutionPlanGenerator {
         id: `rollback_${step.id}`,
         description: `Rollback: ${step.description}`,
         sql: step.rollbackSql!,
+        rollbackSql: step.rollbackSql!,
         type: step.type,
         riskLevel: step.riskLevel,
         validations: [],

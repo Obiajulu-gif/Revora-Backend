@@ -183,14 +183,23 @@ export class Logger {
    * @param obj Object to redact
    * @returns Redacted object
    */
-  private redactSensitive(obj: unknown): unknown {
+  private redactSensitive(obj: unknown, seen = new WeakSet<object>()): unknown {
     if (obj === null || obj === undefined) return obj;
     
     if (typeof obj !== 'object') return obj;
+
+    if (obj instanceof Error) {
+      return obj;
+    }
     
     if (Array.isArray(obj)) {
-      return obj.map((item) => this.redactSensitive(item));
+      return obj.map((item) => this.redactSensitive(item, seen));
     }
+
+    if (seen.has(obj)) {
+      return '[Circular]';
+    }
+    seen.add(obj);
 
     const redacted: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(obj)) {
@@ -200,7 +209,7 @@ export class Logger {
       if (isSensitive) {
         redacted[key] = '[REDACTED]';
       } else if (typeof value === 'object' && value !== null) {
-        redacted[key] = this.redactSensitive(value);
+        redacted[key] = this.redactSensitive(value, seen);
       } else {
         redacted[key] = value;
       }

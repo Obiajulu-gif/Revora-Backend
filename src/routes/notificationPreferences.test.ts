@@ -1,6 +1,7 @@
 import { NextFunction, Response } from 'express';
 import { createNotificationPreferencesRouter } from './notificationPreferences';
 import {
+  NotificationPreferencesRepository,
   NotificationPreferences,
   UpdateNotificationPreferencesInput,
 } from '../db/repositories/notificationPreferencesRepository';
@@ -78,7 +79,7 @@ describe('notification preferences routes', () => {
     });
 
     const req = { user: { id: 'user-123' } } as any;
-    const res = new MockResponse() as any;
+    const res = makeRes() as any;
 
     const handler = findRouteHandler(
       router,
@@ -87,8 +88,8 @@ describe('notification preferences routes', () => {
     );
     await handler(req, res);
 
-    expect(res.statusCode).toBe(200);
-    expect(res.payload).toEqual({
+    expect(res._get().statusCode).toBe(200);
+    expect(res._get().jsonData).toEqual({
       email_notifications: true,
       push_notifications: true,
       sms_notifications: false,
@@ -111,7 +112,7 @@ describe('notification preferences routes', () => {
     });
 
     const req = { user: { id: 'user-123' } } as any;
-    const res = new MockResponse() as any;
+    const res = makeRes() as any;
 
     const handler = findRouteHandler(
       router,
@@ -120,10 +121,10 @@ describe('notification preferences routes', () => {
     );
     await handler(req, res);
 
-    expect(res.statusCode).toBe(200);
-    expect((res.payload as any).email_notifications).toBe(false);
-    expect((res.payload as any).push_notifications).toBe(true);
-    expect((res.payload as any).sms_notifications).toBe(true);
+    expect(res._get().statusCode).toBe(200);
+    expect((res._get().jsonData as any).email_notifications).toBe(false);
+    expect((res._get().jsonData as any).push_notifications).toBe(true);
+    expect((res._get().jsonData as any).sms_notifications).toBe(true);
   });
 
   it('PATCH /api/users/me/notification-preferences updates preferences', async () => {
@@ -139,7 +140,7 @@ describe('notification preferences routes', () => {
       user: { id: 'user-123' },
       body: { email_notifications: false, push_notifications: false },
     } as any;
-    const res = new MockResponse() as any;
+    const res = makeRes() as any;
 
     const handler = findRouteHandler(
       router,
@@ -148,9 +149,9 @@ describe('notification preferences routes', () => {
     );
     await handler(req, res);
 
-    expect(res.statusCode).toBe(200);
-    expect((res.payload as any).email_notifications).toBe(false);
-    expect((res.payload as any).push_notifications).toBe(false);
+    expect(res._get().statusCode).toBe(200);
+    expect((res._get().jsonData as any).email_notifications).toBe(false);
+    expect((res._get().jsonData as any).push_notifications).toBe(false);
   });
 
   it('GET /api/users/me/notification-preferences returns 401 when not authenticated', async () => {
@@ -163,7 +164,7 @@ describe('notification preferences routes', () => {
     });
 
     const req = {} as any;
-    const res = new MockResponse() as any;
+    const res = makeRes() as any;
 
     const handler = findRouteHandler(
       router,
@@ -172,8 +173,8 @@ describe('notification preferences routes', () => {
     );
     await handler(req, res);
 
-    expect(res.statusCode).toBe(401);
-    expect(res.payload).toEqual({ error: 'Unauthorized' });
+    expect(res._get().statusCode).toBe(401);
+    expect(res._get().jsonData).toEqual({ error: 'Unauthorized' });
   });
 
   it('PATCH /api/users/me/notification-preferences returns 401 when not authenticated', async () => {
@@ -186,7 +187,7 @@ describe('notification preferences routes', () => {
     });
 
     const req = { body: { email_notifications: false } } as any;
-    const res = new MockResponse() as any;
+    const res = makeRes() as any;
 
     const handler = findRouteHandler(
       router,
@@ -195,7 +196,7 @@ describe('notification preferences routes', () => {
     );
     await handler(req, res);
 
-    expect(res.statusCode).toBe(401);
-    expect(res.payload).toEqual({ error: 'Unauthorized' });
+    expect(res._get().statusCode).toBe(401);
+    expect(res._get().jsonData).toEqual({ error: 'Unauthorized' });
   });
 });

@@ -69,6 +69,20 @@ export class SessionRepository {
     );
   }
 
+  /**
+   * Backward-compatible helper retained for legacy callers/tests.
+   * Creates a session shell and returns its id so metadata can be set later.
+   */
+  async createSessionForUser(userId: string): Promise<string> {
+    const created = await this.createSession({
+      id: crypto.randomUUID(),
+      user_id: userId,
+      token_hash: '',
+      expires_at: new Date(0),
+    });
+    return created.id;
+  }
+
   async createSessionWithId(
     userId: string,
     sessionId: string,

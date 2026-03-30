@@ -75,6 +75,7 @@ export interface MigrationRollbackRepository {
  */
 export class InMemoryMigrationRollbackRepository implements MigrationRollbackRepository {
   private recoveryPoints: Map<string, RecoveryPoint> = new Map();
+  private tick = 0;
 
   async createRecoveryPoint(
     migrationId: string,
@@ -87,7 +88,7 @@ export class InMemoryMigrationRollbackRepository implements MigrationRollbackRep
       backupType,
       backupPath: `/tmp/migration_backups/${migrationId}_${Date.now()}.sql`,
       checksum: '',
-      createdAt: new Date(),
+      createdAt: new Date(Date.now() + ++this.tick),
       size: 0,
       tables: [],
       metadata,
@@ -810,6 +811,12 @@ export const createMigrationRollbackRepository = (
   pool?: Pool,
   environment = process.env.NODE_ENV
 ): MigrationRollbackRepository => {
+  const injected = (pool as { __migrationRollbackRepository?: MigrationRollbackRepository } | undefined)
+    ?.__migrationRollbackRepository;
+  if (injected) {
+    return injected;
+  }
+
   if (environment === 'production' && pool) {
     return new DatabaseMigrationRollbackRepository(pool);
   }

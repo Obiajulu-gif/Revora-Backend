@@ -77,7 +77,7 @@ export class UniqueConstraintError extends Error {
   readonly field: string;
 
   constructor(field: string, message?: string) {
-    super(message ?? `${field} already exists`);
+    super(message ?? `Duplicate value for field: ${field}`);
     this.name = 'UniqueConstraintError';
     this.field = field;
     Object.setPrototypeOf(this, UniqueConstraintError.prototype);
@@ -119,26 +119,17 @@ export const Errors = {
     details?: unknown,
   ): AppError => createError(ErrorCode.SERVICE_UNAVAILABLE, message, 503, details),
 
-  internal: (details?: unknown): AppError =>
-    createError(
+  internal: (messageOrDetails?: unknown, details?: unknown): AppError => {
+    const hasCustomMessage = typeof messageOrDetails === 'string';
+    return createError(
       ErrorCode.INTERNAL_ERROR,
-      'Internal server error',
+      hasCustomMessage ? messageOrDetails : 'Internal server error',
       500,
-      details,
+      hasCustomMessage ? details : messageOrDetails,
       { expose: false },
-    ),
+    );
+  },
 };
-
-/** Thrown when a database unique constraint (e.g. duplicate email) is violated. */
-export class UniqueConstraintError extends Error {
-  readonly field: string;
-  constructor(field: string) {
-    super(`Unique constraint violated on field: ${field}`);
-    this.name = 'UniqueConstraintError';
-    this.field = field;
-    Object.setPrototypeOf(this, UniqueConstraintError.prototype);
-  }
-}
 
 export function throwError(
   code: ErrorCode,

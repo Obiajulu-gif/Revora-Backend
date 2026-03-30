@@ -10,6 +10,8 @@ export interface RateLimitOptions {
   perUser?: boolean;
   /** Optional message to send when limit is exceeded. */
   message?: string;
+  /** Optional key prefix to isolate counters across independent policies. */
+  keyPrefix?: string;
 }
 
 interface WindowEntry {
@@ -33,6 +35,8 @@ export interface RateLimitStore {
   increment(key: string, windowMs: number): { count: number; resetAt: number };
   /** Reset the counter for `key` (useful in tests). */
   reset(key: string): void;
+  /** Clear all counters (test helper). */
+  clear?(): void;
 }
 
 export class InMemoryRateLimitStore implements RateLimitStore {
@@ -55,6 +59,10 @@ export class InMemoryRateLimitStore implements RateLimitStore {
 
   reset(key: string): void {
     this.windows.delete(key);
+  }
+
+  clear(): void {
+    this.windows.clear();
   }
 }
 
@@ -103,6 +111,7 @@ export function createRateLimitMiddleware(options: RateLimitOptions & { store?: 
     windowMs = 60_000,
     perUser = false,
     message = 'Too many requests, please try again later.',
+    keyPrefix = '',
     store = defaultStore,
   } = options;
 
@@ -133,7 +142,8 @@ export function createRateLimitMiddleware(options: RateLimitOptions & { store?: 
     }
 
     // ── Check & increment the counter ─────────────────────────────────────
-    const { count, resetAt } = store.increment(key, windowMs);
+    const scopedKey = keyPrefix ? `${keyPrefix}:${key}` : key;
+    const { count, resetAt } = store.increment(scopedKey, windowMs);
     const remaining = Math.max(0, limit - count);
     const resetSecs = Math.ceil(resetAt / 1000);
 
