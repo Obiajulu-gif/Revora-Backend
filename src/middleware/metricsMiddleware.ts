@@ -136,7 +136,7 @@ export function metricsMiddleware(config: MetricsMiddlewareConfig) {
       }
 
       // Call original end
-      return originalEnd.apply(this, args);
+      return (originalEnd as any).apply(this, args as any[]);
     };
 
     next();

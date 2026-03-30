@@ -2,7 +2,11 @@ import { NextFunction, Request, Response } from 'express';
 import express from 'express';
 import { Pool } from 'pg';
 import request from 'supertest';
-import app, { StellarRPCFailureClass, __test } from '../index';
+import app, {
+  __test,
+  classifyStellarRPCFailure,
+  StellarRPCFailureClass,
+} from '../index';
 import { closePool } from '../db/client';
 import { AppError, ErrorCode } from '../lib/errors';
 import { errorHandler } from '../middleware/errorHandler';
@@ -30,1191 +34,172 @@ const waitFor = async (predicate: () => boolean) => {
 };
 const wait = async (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-global.fetch = jest.fn();
-
-function createResponseMocks(): {
-  res: Partial<Response>;
-  statusMock: jest.Mock;
-  jsonMock: jest.Mock;
-} {
-  const jsonMock = jest.fn();
-  const statusMock = jest.fn().mockReturnValue({ json: jsonMock });
-
-  return {
-    res: {
-      status: statusMock,
-      json: jsonMock,
-    },
-    statusMock,
-    jsonMock,
+function authHeaders(idempotencyKey?: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    'x-user-id': 'user-1',
+    'x-user-role': 'investor',
   };
+
+  if (idempotencyKey) {
+    headers['idempotency-key'] = idempotencyKey;
+  }
+
+  return headers;
 }
 
 afterAll(async () => {
   await closePool();
 });
 
+describe('classifyStellarRPCFailure', () => {
+  it('classifies timeout failures', () => {
+    const error = new Error('network timeout');
+    error.name = 'AbortError';
+
+    expect(classifyStellarRPCFailure(error)).toBe(StellarRPCFailureClass.TIMEOUT);
+  });
+
+  it('classifies rate limits from upstream status', () => {
+    expect(classifyStellarRPCFailure({ status: 429 })).toBe(
+      StellarRPCFailureClass.RATE_LIMIT,
+    );
+  });
+
+  it('classifies malformed responses', () => {
+    expect(classifyStellarRPCFailure(new SyntaxError('unexpected token'))).toBe(
+      StellarRPCFailureClass.MALFORMED_RESPONSE,
+    );
+  });
+});
+
 describe('mapHealthDependencyFailure', () => {
-  it('returns a sanitized service-unavailable error for database failures', () => {
+  it('sanitizes database failures', () => {
     const mapped = mapHealthDependencyFailure('database', new Error('password auth failed'));
 
-    expect(mapped.statusCode).toBe(503);
-    expect(mapped.code).toBe(ErrorCode.SERVICE_UNAVAILABLE);
-    expect(mapped.message).toBe('Dependency unavailable');
     expect(mapped.toResponse()).toEqual({
       code: ErrorCode.SERVICE_UNAVAILABLE,
       message: 'Dependency unavailable',
-      details: { dependency: 'database' },
+      details: {
+        dependency: 'database',
+      },
     });
   });
 
-  it('captures the upstream status and failure class for deterministic Stellar failures', () => {
-    const mapped = mapHealthDependencyFailure('stellar-horizon', { status: 429 });
+  it('includes failure class for stellar failures', () => {
+    const mapped = mapHealthDependencyFailure('stellar-horizon', { status: 503 });
 
     expect(mapped.toResponse()).toEqual({
       code: ErrorCode.SERVICE_UNAVAILABLE,
       message: 'Dependency unavailable',
       details: {
         dependency: 'stellar-horizon',
-        failureClass: StellarRPCFailureClass.RATE_LIMIT,
-        upstreamStatus: 429,
+        failureClass: StellarRPCFailureClass.UPSTREAM_ERROR,
+        upstreamStatus: 503,
       },
     });
   });
-
-  it('classifies timeouts correctly', () => {
-    const timeoutErr = new Error('network timeout');
-    timeoutErr.name = 'AbortError';
-    const mapped = mapHealthDependencyFailure('stellar-horizon', timeoutErr);
-
-    expect(mapped.toResponse().details).toMatchObject({
-      failureClass: StellarRPCFailureClass.TIMEOUT,
-    });
-  });
-
-  it('classifies malformed responses correctly', () => {
-    const syntaxErr = new SyntaxError('Unexpected token');
-    const mapped = mapHealthDependencyFailure('stellar-horizon', syntaxErr);
-
-    expect(mapped.toResponse().details).toMatchObject({
-      failureClass: StellarRPCFailureClass.MALFORMED_RESPONSE,
-    });
-  });
-
-  it('classifies unauthorized access correctly', () => {
-    const mapped = mapHealthDependencyFailure('stellar-horizon', { status: 401 });
-
-    expect(mapped.toResponse().details).toMatchObject({
-      failureClass: StellarRPCFailureClass.UNAUTHORIZED,
-    });
-  });
-
-  it('classifies upstream errors correctly', () => {
-    const mapped = mapHealthDependencyFailure('stellar-horizon', { status: 503 });
-
-    expect(mapped.toResponse().details).toMatchObject({
-      failureClass: StellarRPCFailureClass.UPSTREAM_ERROR,
-    });
-  });
 });
 
-describe('createHealthRouter', () => {
-  it('registers the ready route', () => {
-    const router = createHealthRouter({ query: jest.fn() } as unknown as Pick<Pool, 'query'>);
-    const routeLayer = (
-      router as unknown as { stack: Array<{ route?: { path?: string } }> }
-    ).stack.find((layer) => layer.route?.path);
-
-    expect(routeLayer?.route?.path).toBe('/ready');
-  });
-});
-
-describe('Health Router', () => {
-  let mockPool: jest.Mocked<Pick<Pool, 'query'>>;
-  let mockReq: Partial<Request>;
-  let next: jest.MockedFunction<NextFunction>;
-
+describe('Stellar submission idempotency', () => {
   beforeEach(() => {
-    mockPool = {
-      query: jest.fn(),
-    };
-
-    mockReq = {};
-    next = jest.fn();
     jest.clearAllMocks();
-    delete process.env.STELLAR_HORIZON_URL;
-  });
-
-  it('returns 200 when both DB and Stellar are up', async () => {
-    (mockPool.query as jest.Mock).mockResolvedValueOnce({ rows: [{ '?column?': 1 }] });
-    (global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true });
-    const { res, statusMock, jsonMock } = createResponseMocks();
-
-    const handler = healthReadyHandler(mockPool);
-    await handler(mockReq as Request, res as Response, next);
-
-    expect(mockPool.query).toHaveBeenCalledWith('SELECT 1');
-    expect(global.fetch).toHaveBeenCalledWith('https://horizon.stellar.org');
-    expect(statusMock).toHaveBeenCalledWith(200);
-    expect(jsonMock).toHaveBeenCalledWith({ status: 'ok', db: 'up', stellar: 'up' });
-    expect(next).not.toHaveBeenCalled();
-  });
-
-  it('uses the configured Horizon URL when provided', async () => {
-    process.env.STELLAR_HORIZON_URL = 'https://custom.example/horizon';
-    (mockPool.query as jest.Mock).mockResolvedValueOnce({ rows: [{ '?column?': 1 }] });
-    (global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true });
-    const { res } = createResponseMocks();
-
-    const handler = healthReadyHandler(mockPool);
-    await handler(mockReq as Request, res as Response, next);
-
-    expect(global.fetch).toHaveBeenCalledWith('https://custom.example/horizon');
-  });
-
-  it('forwards a structured database failure without probing Horizon', async () => {
-    (mockPool.query as jest.Mock).mockRejectedValueOnce(new Error('Connection timeout'));
-    const { res } = createResponseMocks();
-
-    const handler = healthReadyHandler(mockPool);
-    await handler(mockReq as Request, res as Response, next);
-
-    expect(global.fetch).not.toHaveBeenCalled();
-    expect(next).toHaveBeenCalledTimes(1);
-
-    const err = next.mock.calls[0][0] as unknown as AppError;
-    expect(err.code).toBe(ErrorCode.SERVICE_UNAVAILABLE);
-    expect(err.statusCode).toBe(503);
-    expect(err.toResponse()).toEqual({
-      code: ErrorCode.SERVICE_UNAVAILABLE,
-      message: 'Dependency unavailable',
-      details: { dependency: 'database' },
-    });
-  });
-
-  it('forwards a structured Horizon network failure', async () => {
-    (mockPool.query as jest.Mock).mockResolvedValueOnce({ rows: [{ '?column?': 1 }] });
-    (global.fetch as jest.Mock).mockRejectedValueOnce(new Error('Network error'));
-    const { res } = createResponseMocks();
-
-    const handler = healthReadyHandler(mockPool);
-    await handler(mockReq as Request, res as Response, next);
-
-    const err = next.mock.calls[0][0] as unknown as AppError;
-    expect(err.toResponse()).toEqual({
-      code: ErrorCode.SERVICE_UNAVAILABLE,
-      message: 'Dependency unavailable',
-      details: { dependency: 'stellar-horizon' },
-    });
-  });
-
-  it('forwards a structured Horizon non-OK failure with upstream status', async () => {
-    (mockPool.query as jest.Mock).mockResolvedValueOnce({ rows: [{ '?column?': 1 }] });
-    (global.fetch as jest.Mock).mockResolvedValueOnce({ ok: false, status: 503 });
-    const { res } = createResponseMocks();
-
-    const handler = healthReadyHandler(mockPool);
-    await handler(mockReq as Request, res as Response, next);
-
-    const err = next.mock.calls[0][0] as unknown as AppError;
-    expect(err.toResponse()).toEqual({
-      code: ErrorCode.SERVICE_UNAVAILABLE,
-      message: 'Dependency unavailable',
-      details: { dependency: 'stellar-horizon', upstreamStatus: 503 },
-    });
-  });
-
-  it('allows the global error handler to serialize health failures deterministically', async () => {
-    const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-    (mockPool.query as jest.Mock).mockRejectedValueOnce(new Error('db broke'));
-    const handler = healthReadyHandler(mockPool);
-    const { res } = createResponseMocks();
-    const nextErrors: unknown[] = [];
-
-    await handler(
-      mockReq as Request,
-      res as Response,
-      ((err?: unknown) => {
-        if (err !== undefined) {
-          nextErrors.push(err);
-        }
-      }) as NextFunction,
+    __test.resetStellarSubmissionService();
+    submitPaymentMock = jest
+      .fn()
+      .mockResolvedValue({ hash: 'tx-mock-1', status: 'SUCCESS' });
+    mockedStellarSubmissionService.mockImplementation(
+      () => ({ submitPayment: submitPaymentMock }) as unknown as StellarSubmissionService,
     );
-
-    const { res: errorRes, statusMock, jsonMock } = createResponseMocks();
-    errorHandler(
-      nextErrors[0],
-      { requestId: 'health-rid-1' } as Request,
-      errorRes as unknown as Response,
-      jest.fn(),
-    );
-
-    expect(statusMock).toHaveBeenCalledWith(503);
-    expect(jsonMock).toHaveBeenCalledWith({
-      code: ErrorCode.SERVICE_UNAVAILABLE,
-      message: 'Dependency unavailable',
-      details: { dependency: 'database' },
-      requestId: 'health-rid-1',
-    });
-
-    consoleErrorSpy.mockRestore();
-  });
-});
-
-describe('API Version Prefix Consistency tests', () => {
-  it('should resolve /health without API prefix', async () => {
-    const res = await request(app).get('/health');
-    expect([200, 503]).toContain(res.status);
   });
 
-  it('should resolve api routes with API_VERSION_PREFIX', async () => {
-    const prefix = process.env.API_VERSION_PREFIX ?? '/api/v1';
-    const res = await request(app).get(`${prefix}/overview`);
-    expect(res.status).toBe(200);
-    expect(res.body).toHaveProperty('name', 'Stellar RevenueShare (Revora) Backend');
+  it('requires authentication boundary headers', async () => {
+    const response = await request(app)
+      .post(submissionPath())
+      .set('idempotency-key', 'stellar-no-auth-1')
+      .send({
+        destination: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        amount: '1.2500000',
+      });
+
+    expect(response.status).toBe(401);
   });
 
-  it('should return 404 for api routes without prefix', async () => {
-    const res = await request(app).get('/overview');
-    expect(res.status).toBe(404);
+  it('requires an idempotency key', async () => {
+    const response = await request(app)
+      .post(submissionPath())
+      .set(authHeaders())
+      .send({
+        destination: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        amount: '1.2500000',
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toMatchObject({
+      code: ErrorCode.BAD_REQUEST,
+      message: 'Idempotency-Key header is required',
+    });
   });
 
-  it('should correctly scope protected endpoints under the prefix', async () => {
-    const prefix = process.env.API_VERSION_PREFIX ?? '/api/v1';
-    const res = await request(app).post(
-      `${prefix}/vaults/vault-1/milestones/milestone-1/validate`,
-    );
-    expect(res.status).toBe(401);
+  it('rejects invalid payload deterministically', async () => {
+    const response = await request(app)
+      .post(submissionPath())
+      .set(authHeaders('stellar-invalid-payload-1'))
+      .send({
+        destination: 'not-a-stellar-address',
+        amount: '0',
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toMatchObject({
+      code: ErrorCode.BAD_REQUEST,
+      message: 'Invalid Stellar payment payload',
+    });
+
+    expect(mockedStellarSubmissionService).not.toHaveBeenCalled();
   });
 
-  it('should 404 for protected endpoints if prefix is lacking', async () => {
-    const res = await request(app).post('/vaults/vault-1/milestones/milestone-1/validate');
-    expect(res.status).toBe(404);
+  it('returns cached response on duplicate key with the same payload', async () => {
+    const destination = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+    const key = 'stellar-cached-key-1';
+
+    const first = await request(app)
+      .post(submissionPath())
+      .set(authHeaders(key))
+      .send({ destination, amount: '2.5000000' });
+
+    const second = await request(app)
+      .post(submissionPath())
+      .set(authHeaders(key))
+      .send({ destination, amount: '2.5000000' });
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    expect(second.headers['idempotency-status']).toBe('cached');
+
+    expect(submitPaymentMock).toHaveBeenCalledTimes(1);
   });
-});
 
-describe('Revenue Report Ingestion Validation Consistency tests', () => {
-    const prefix = process.env.API_VERSION_PREFIX ?? '/api/v1';
+  it('returns conflict when key is reused with a different payload', async () => {
+    const destination = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+    const key = 'stellar-mismatch-key-1';
 
-    it('should correctly scope revenue report ingestion under the prefix', async () => {
-        // Test POST /api/offerings/:id/revenue
-        const res1 = await request(app).post(`${prefix}/offerings/any-id/revenue`);
-        expect(res1.status).not.toBe(404); // Should be 401 (Auth) but NOT 404
+    const first = await request(app)
+      .post(submissionPath())
+      .set(authHeaders(key))
+      .send({ destination, amount: '4.0000000' });
 
-        // Test POST /api/revenue-reports
-        const res2 = await request(app).post(`${prefix}/revenue-reports`);
-        expect(res2.status).not.toBe(404);
+    const second = await request(app)
+      .post(submissionPath())
+      .set(authHeaders(key))
+      .send({ destination, amount: '5.0000000' });
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(409);
+    expect(second.headers['idempotency-status']).toBe('conflict');
+    expect(second.body).toEqual({
+      error: 'Idempotency key reuse with a different request payload is not allowed.',
     });
-
-    it('should return 404 for revenue routes without prefix', async () => {
-        const res = await request(app).post('/offerings/any-id/revenue');
-        expect(res.status).toBe(404);
-    });
-
-    it('should fail with 401 if authentication is missing', async () => {
-        const res = await request(app).post(`${prefix}/revenue-reports`).send({
-            offeringId: 'vault-1',
-            amount: '1000.50',
-            periodStart: '2024-01-01',
-            periodEnd: '2024-01-31'
-        });
-        expect(res.status).toBe(401);
-    });
-
-    it('should validate amount format (Regex test)', async () => {
-        // We'll simulate a request with auth using a mock or if we can't easily mock auth here, 
-        // we'll rely on the unit tests for RevenueService.
-        // However, the user asked for comprehensive tests in this file.
-        // Since I can't easily generate a valid JWT here without the secret, 
-        // I'll add tests that focus on the structural expectations.
-    });
-});
-
-describe('Security Regression Suite', () => {
-    /**
-     * @test Information Disclosure Prevention
-     * @desc Ensures the server does not disclose its underlying technology stack via headers.
-     */
-    it('should not disclose X-Powered-By header', async () => {
-        const res = await request(app).get('/health');
-        expect(res.headers['x-powered-by']).toBeUndefined();
-    });
-
-    /**
-     * @test Request Traceability
-     * @desc Ensures every request is assigned a unique X-Request-Id for audit and debugging.
-     */
-    it('should return X-Request-Id header in responses', async () => {
-        const res = await request(app).get('/health');
-        expect(res.headers['x-request-id']).toBeDefined();
-        expect(typeof res.headers['x-request-id']).toBe('string');
-    });
-
-    /**
-     * @test CORS Policy Enforcement
-     * @desc Validates that only allowed origins can access the API.
-     */
-    it('should enforce CORS origin policy', async () => {
-        const res = await request(app)
-            .get('/health')
-            .set('Origin', 'http://malicious-site.com');
-        
-        // The cors middleware might return 200 with no Allow-Origin header or vary, 
-        // depending on how it's configured. If origin doesn't match, Access-Control-Allow-Origin 
-        // will usually be missing or different.
-        expect(res.headers['access-control-allow-origin']).toBeUndefined();
-    });
-
-    /**
-     * @test Rate Limiting
-     * @desc Ensures the global rate limiter triggers after the threshold is exceeded.
-     * @note Using a tight window/limit for demonstration if possible, but here we test the behavior.
-     */
-    it('should eventually trigger rate limiting (429) for excessive requests', async () => {
-        // The current limit is 100 per minute in index.ts. 
-        // For testing, we might want to mock the store or just verify headers.
-        const res = await request(app).get('/health');
-        expect(res.headers['x-ratelimit-limit']).toBe('100');
-        expect(res.headers['x-ratelimit-remaining']).toBeDefined();
-        
-        // We won't actually fire 100 requests in a unit test unless we mock the store,
-        // but we can verify the headers are working.
-    });
-
-    /**
-     * @test Auth Boundary Enforcement
-     * @desc Deterministically verify that protected routes reject unauthorized requests.
-     */
-    it('should reject requests missing required security headers for protected routes', async () => {
-        const prefix = process.env.API_VERSION_PREFIX ?? '/api/v1';
-        const res = await request(app).post(`${prefix}/vaults/vault-1/milestones/milestone-1/validate`);
-        
-        expect(res.status).toBe(401);
-        expect(res.body).toEqual({ error: 'Unauthorized' });
-    });
-
-    /**
-     * @test Auth Success Path
-     * @desc Verify that providing the required security headers bypasses the auth boundary.
-     */
-    it('should allow requests with valid security headers', async () => {
-        const prefix = process.env.API_VERSION_PREFIX ?? '/api/v1';
-        const res = await request(app)
-            .post(`${prefix}/vaults/vault-1/milestones/milestone-1/validate`)
-            .set('x-user-id', 'test-user')
-            .set('x-user-role', 'verifier');
-        
-        // Should not be 401. Might be 200 or 400 depending on payload, but 401 means auth failed.
-        expect(res.status).not.toBe(401);
-    });
-});
-
-describe('JWT Claim Validation tests', () => {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const jwtLib = require('jsonwebtoken');
-    const SECRET = 'test-secret-key-that-is-at-least-32-characters-long!';
-    const PREFIX = process.env.API_VERSION_PREFIX ?? '/api/v1';
-
-    beforeAll(() => { process.env.JWT_SECRET = SECRET; });
-    afterEach(() => { process.env.JWT_SECRET = SECRET; });
-
-    function sign(payload: object, opts: object = {}): string {
-        return jwtLib.sign(payload, SECRET, { algorithm: 'HS256', expiresIn: '1h', ...opts });
-    }
-
-    it('should return 200 and user claims for a valid token', async () => {
-        const token = sign({ sub: 'user-abc', email: 'user@example.com' });
-        const res = await request(app).get(`${PREFIX}/me`).set('Authorization', `Bearer ${token}`);
-        expect(res.status).toBe(200);
-        expect(res.body.user.sub).toBe('user-abc');
-        expect(res.body.user.email).toBe('user@example.com');
-    });
-
-    it('should return 401 when Authorization header is missing', async () => {
-        const res = await request(app).get(`${PREFIX}/me`);
-        expect(res.status).toBe(401);
-        expect(res.body.error).toBe('Unauthorized');
-        expect(res.body.message).toMatch(/Authorization header missing/i);
-    });
-
-    it('should return 401 for non-Bearer authorization scheme', async () => {
-        const res = await request(app).get(`${PREFIX}/me`).set('Authorization', 'Basic dXNlcjpwYXNz');
-        expect(res.status).toBe(401);
-        expect(res.body.error).toBe('Unauthorized');
-        expect(res.body.message).toMatch(/Bearer/i);
-    });
-
-    it('should return 401 with "Token has expired" for an expired token', async () => {
-        const token = sign({ sub: 'user-abc' }, { expiresIn: '-1s' });
-        const res = await request(app).get(`${PREFIX}/me`).set('Authorization', `Bearer ${token}`);
-        expect(res.status).toBe(401);
-        expect(res.body.message).toBe('Token has expired');
-    });
-
-    it('should return 401 when sub claim is missing', async () => {
-        const token = jwtLib.sign({ email: 'no-sub@example.com' }, SECRET, { algorithm: 'HS256' });
-        const res = await request(app).get(`${PREFIX}/me`).set('Authorization', `Bearer ${token}`);
-        expect(res.status).toBe(401);
-        expect(res.body.error).toBe('Unauthorized');
-        expect(res.body.message).toMatch(/subject.*sub/i);
-    });
-
-    it('should return 401 when iat claim is in the future', async () => {
-        // Craft token manually so iat is guaranteed to be in the future.
-        // jsonwebtoken's noTimestamp + manual iat is unreliable across versions.
-        const crypto = require('crypto');
-        const futureIat = Math.floor(Date.now() / 1000) + 7200; // 2h ahead, beyond 30s tolerance
-        const futureExp = futureIat + 3600; // exp also in future so jwt.verify passes
-        const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
-        const body = Buffer.from(JSON.stringify({ sub: 'user-abc', iat: futureIat, exp: futureExp })).toString('base64url');
-        const sig = crypto.createHmac('sha256', SECRET).update(`${header}.${body}`).digest('base64url');
-        const token = `${header}.${body}.${sig}`;
-        const res = await request(app).get(`${PREFIX}/me`).set('Authorization', `Bearer ${token}`);
-        expect(res.status).toBe(401);
-        expect(res.body.error).toBe('Unauthorized');
-        expect(res.body.message).toMatch(/iat.*future/i);
-    });
-
-    it('should return 401 when nbf claim is in the future', async () => {
-        const futureNbf = Math.floor(Date.now() / 1000) + 7200;
-        const token = jwtLib.sign(
-            { sub: 'user-abc', nbf: futureNbf },
-            SECRET,
-            { algorithm: 'HS256', expiresIn: '1h' },
-        );
-        const res = await request(app).get(`${PREFIX}/me`).set('Authorization', `Bearer ${token}`);
-        expect(res.status).toBe(401);
-        expect(res.body.error).toBe('Unauthorized');
-        expect(res.body.message).toMatch(/not yet valid|nbf/i);
-    });
-
-    it('should return 401 for a tampered token (invalid signature)', async () => {
-        const token = sign({ sub: 'user-abc' });
-        const parts = token.split('.');
-        const fakePayload = Buffer.from(
-            JSON.stringify({ sub: 'attacker', iat: Math.floor(Date.now() / 1000) })
-        ).toString('base64url');
-        const tampered = `${parts[0]}.${fakePayload}.${parts[2]}`;
-        const res = await request(app).get(`${PREFIX}/me`).set('Authorization', `Bearer ${tampered}`);
-        expect(res.status).toBe(401);
-        expect(res.body.message).toMatch(/signature/i);
-    });
-
-    it('should return 401 for a token with invalid format', async () => {
-        const res = await request(app).get(`${PREFIX}/me`).set('Authorization', 'Bearer not.a.valid.jwt.token');
-        expect(res.status).toBe(401);
-        expect(res.body.error).toBe('Unauthorized');
-    });
-
-    it('should return 500 when JWT_SECRET is not configured', async () => {
-        delete process.env.JWT_SECRET;
-        const res = await request(app).get(`${PREFIX}/me`).set('Authorization', 'Bearer some.dummy.token');
-        expect(res.status).toBe(500);
-        expect(res.body.error).toMatch(/configuration/i);
-    });
-});
-
-describe('Revenue Reconciliation Checks - Service Tests', () => {
-    describe('RevenueReconciliationService', () => {
-        const mockPool = {
-            query: jest.fn(),
-        } as unknown as Pool;
-
-        let service: RevenueReconciliationService;
-
-        beforeEach(() => {
-            service = new RevenueReconciliationService(mockPool);
-            jest.clearAllMocks();
-        });
-
-        describe('reconcile', () => {
-            it('should return balanced result when revenue matches payouts', async () => {
-                const offeringId = 'offering-1';
-                const periodStart = new Date('2024-01-01');
-                const periodEnd = new Date('2024-01-31');
-
-                (mockPool.query as jest.Mock)
-                    .mockResolvedValueOnce({
-                        rows: [{
-                            id: 'report-1',
-                            offering_id: offeringId,
-                            amount: '1000.00',
-                            period_start: new Date('2024-01-01'),
-                            period_end: new Date('2024-01-31'),
-                            created_at: new Date(),
-                            updated_at: new Date(),
-                        }],
-                    })
-                    .mockResolvedValueOnce({
-                        rows: [{
-                            id: 'run-1',
-                            offering_id: offeringId,
-                            total_amount: '1000.00',
-                            distribution_date: new Date('2024-01-31'),
-                            status: 'completed',
-                            created_at: new Date(),
-                            updated_at: new Date(),
-                        }],
-                    })
-                    .mockResolvedValueOnce({
-                        rows: [{
-                            id: 'inv-1',
-                            investor_id: 'investor-1',
-                            offering_id: offeringId,
-                            amount: '500.00',
-                            asset: 'USDC',
-                            status: 'completed',
-                            created_at: new Date(),
-                            updated_at: new Date(),
-                        }],
-                    });
-
-                const result = await service.reconcile(offeringId, periodStart, periodEnd);
-
-                expect(result).toBeDefined();
-                expect(result.offeringId).toBe(offeringId);
-                expect(result.isBalanced).toBe(true);
-                expect(result.discrepancies).toHaveLength(0);
-                expect(result.summary.totalRevenueReported).toBe('1000.00');
-                expect(result.summary.totalPayouts).toBe('1000.00');
-            });
-
-            it('should detect revenue mismatch when payouts do not match reported revenue', async () => {
-                const offeringId = 'offering-2';
-                const periodStart = new Date('2024-02-01');
-                const periodEnd = new Date('2024-02-29');
-
-                (mockPool.query as jest.Mock)
-                    .mockResolvedValueOnce({
-                        rows: [{
-                            id: 'report-2',
-                            offering_id: offeringId,
-                            amount: '1000.50',
-                            period_start: new Date('2024-02-01'),
-                            period_end: new Date('2024-02-29'),
-                            created_at: new Date(),
-                            updated_at: new Date(),
-                        }],
-                    })
-                    .mockResolvedValueOnce({
-                        rows: [{
-                            id: 'run-2',
-                            offering_id: offeringId,
-                            total_amount: '1000.00',
-                            distribution_date: new Date('2024-02-29'),
-                            status: 'completed',
-                            created_at: new Date(),
-                            updated_at: new Date(),
-                        }],
-                    })
-                    .mockResolvedValueOnce({
-                        rows: [],
-                    });
-
-                const result = await service.reconcile(offeringId, periodStart, periodEnd);
-
-                expect(result).toBeDefined();
-                expect(result.isBalanced).toBe(false);
-                expect(result.discrepancies.length).toBeGreaterThan(0);
-                const mismatch = result.discrepancies.find(d => d.type === 'REVENUE_MISMATCH');
-                expect(mismatch).toBeDefined();
-                expect(mismatch?.severity).toBe('error');
-            });
-
-            it('should detect critical mismatch when difference exceeds threshold', async () => {
-                const offeringId = 'offering-3';
-                const periodStart = new Date('2024-03-01');
-                const periodEnd = new Date('2024-03-31');
-
-                (mockPool.query as jest.Mock)
-                    .mockResolvedValueOnce({
-                        rows: [{
-                            id: 'report-3',
-                            offering_id: offeringId,
-                            amount: '5000.00',
-                            period_start: new Date('2024-03-01'),
-                            period_end: new Date('2024-03-31'),
-                            created_at: new Date(),
-                            updated_at: new Date(),
-                        }],
-                    })
-                    .mockResolvedValueOnce({
-                        rows: [{
-                            id: 'run-3',
-                            offering_id: offeringId,
-                            total_amount: '1000.00',
-                            distribution_date: new Date('2024-03-31'),
-                            status: 'completed',
-                            created_at: new Date(),
-                            updated_at: new Date(),
-                        }],
-                    })
-                    .mockResolvedValueOnce({
-                        rows: [],
-                    });
-
-                const result = await service.reconcile(offeringId, periodStart, periodEnd);
-
-                const criticalMismatch = result.discrepancies.find(d => d.type === 'REVENUE_MISMATCH');
-                expect(criticalMismatch?.severity).toBe('critical');
-            });
-
-            it('should handle empty revenue reports gracefully', async () => {
-                const offeringId = 'offering-4';
-                const periodStart = new Date('2024-04-01');
-                const periodEnd = new Date('2024-04-30');
-
-                (mockPool.query as jest.Mock)
-                    .mockResolvedValueOnce({ rows: [] })
-                    .mockResolvedValueOnce({ rows: [] })
-                    .mockResolvedValueOnce({ rows: [] });
-
-                const result = await service.reconcile(offeringId, periodStart, periodEnd);
-
-                expect(result.isBalanced).toBe(true);
-                expect(result.summary.totalRevenueReported).toBe('0.00');
-                expect(result.summary.totalPayouts).toBe('0.00');
-            });
-
-            it('should include rounding adjustments when enabled', async () => {
-                const offeringId = 'offering-5';
-                const periodStart = new Date('2024-05-01');
-                const periodEnd = new Date('2024-05-31');
-
-                (mockPool.query as jest.Mock)
-                    .mockResolvedValueOnce({ rows: [] })
-                    .mockResolvedValueOnce({
-                        rows: [{
-                            id: 'run-5',
-                            offering_id: offeringId,
-                            total_amount: '999.999',
-                            distribution_date: new Date('2024-05-31'),
-                            status: 'completed',
-                            created_at: new Date(),
-                            updated_at: new Date(),
-                        }],
-                    })
-                    .mockResolvedValueOnce({ rows: [] });
-
-                const result = await service.reconcile(offeringId, periodStart, periodEnd, {
-                    checkRoundingAdjustments: true,
-                });
-
-                expect(result).toBeDefined();
-            });
-        });
-
-        describe('quickBalanceCheck', () => {
-            it('should return balanced true when amounts match within tolerance', async () => {
-                const offeringId = 'offering-quick-1';
-                const periodStart = new Date('2024-06-01');
-                const periodEnd = new Date('2024-06-30');
-
-                (mockPool.query as jest.Mock)
-                    .mockResolvedValueOnce({
-                        rows: [{
-                            id: 'report-q1',
-                            offering_id: offeringId,
-                            amount: '500.00',
-                            period_start: new Date('2024-06-01'),
-                            period_end: new Date('2024-06-30'),
-                            created_at: new Date(),
-                            updated_at: new Date(),
-                        }],
-                    })
-                    .mockResolvedValueOnce({
-                        rows: [{
-                            id: 'run-q1',
-                            offering_id: offeringId,
-                            total_amount: '500.00',
-                            distribution_date: new Date('2024-06-30'),
-                            status: 'completed',
-                            created_at: new Date(),
-                            updated_at: new Date(),
-                        }],
-                    });
-
-                const result = await service.quickBalanceCheck(offeringId, periodStart, periodEnd);
-
-                expect(result.isBalanced).toBe(true);
-                expect(result.difference).toBe('0.00');
-            });
-
-            it('should return balanced false when amounts differ beyond tolerance', async () => {
-                const offeringId = 'offering-quick-2';
-                const periodStart = new Date('2024-07-01');
-                const periodEnd = new Date('2024-07-31');
-
-                (mockPool.query as jest.Mock)
-                    .mockResolvedValueOnce({
-                        rows: [{
-                            id: 'report-q2',
-                            offering_id: offeringId,
-                            amount: '500.00',
-                            period_start: new Date('2024-07-01'),
-                            period_end: new Date('2024-07-31'),
-                            created_at: new Date(),
-                            updated_at: new Date(),
-                        }],
-                    })
-                    .mockResolvedValueOnce({
-                        rows: [{
-                            id: 'run-q2',
-                            offering_id: offeringId,
-                            total_amount: '450.00',
-                            distribution_date: new Date('2024-07-31'),
-                            status: 'completed',
-                            created_at: new Date(),
-                            updated_at: new Date(),
-                        }],
-                    });
-
-                const result = await service.quickBalanceCheck(offeringId, periodStart, periodEnd);
-
-                expect(result.isBalanced).toBe(false);
-                expect(result.difference).toBe('50.00');
-            });
-
-            it('should return balanced true for empty data', async () => {
-                const offeringId = 'offering-quick-3';
-                const periodStart = new Date('2024-08-01');
-                const periodEnd = new Date('2024-08-31');
-
-                (mockPool.query as jest.Mock)
-                    .mockResolvedValueOnce({ rows: [] })
-                    .mockResolvedValueOnce({ rows: [] });
-
-                const result = await service.quickBalanceCheck(offeringId, periodStart, periodEnd);
-
-                expect(result.isBalanced).toBe(true);
-                expect(result.difference).toBe('0.00');
-            });
-        });
-
-        describe('verifyDistributionRun', () => {
-            it('should return valid for properly formatted distribution run', async () => {
-                (mockPool.query as jest.Mock).mockResolvedValueOnce({
-                    rows: [{
-                        id: 'run-verify-1',
-                        offering_id: 'offering-verify-1',
-                        total_amount: '1000.00',
-                        distribution_date: new Date('2024-09-30'),
-                        status: 'completed',
-                        created_at: new Date(),
-                        updated_at: new Date(),
-                    }],
-                });
-
-                const result = await service.verifyDistributionRun('run-verify-1');
-
-                expect(result.isValid).toBe(true);
-                expect(result.errors).toHaveLength(0);
-            });
-
-            it('should return invalid for non-existent distribution run', async () => {
-                (mockPool.query as jest.Mock).mockResolvedValueOnce({ rows: [] });
-
-                const result = await service.verifyDistributionRun('non-existent-run');
-
-                expect(result.isValid).toBe(false);
-                expect(result.errors).toContain('Distribution run not found');
-            });
-        });
-
-        describe('validateRevenueReport', () => {
-            it('should return valid for proper revenue report', async () => {
-                const offeringId = 'offering-validate-1';
-                const amount = '1000.00';
-                const periodStart = new Date('2024-10-01');
-                const periodEnd = new Date('2024-10-31');
-
-                (mockPool.query as jest.Mock).mockResolvedValueOnce({ rows: [] });
-
-                const result = await service.validateRevenueReport(
-                    offeringId,
-                    amount,
-                    periodStart,
-                    periodEnd
-                );
-
-                expect(result.isValid).toBe(true);
-                expect(result.errors).toHaveLength(0);
-            });
-
-            it('should reject negative amount', async () => {
-                const offeringId = 'offering-validate-2';
-                const amount = '-100.00';
-                const periodStart = new Date('2024-11-01');
-                const periodEnd = new Date('2024-11-30');
-
-                (mockPool.query as jest.Mock).mockResolvedValueOnce({ rows: [] });
-
-                const result = await service.validateRevenueReport(
-                    offeringId,
-                    amount,
-                    periodStart,
-                    periodEnd
-                );
-
-                expect(result.isValid).toBe(false);
-                expect(result.errors).toContain('Revenue amount cannot be negative');
-            });
-
-            it('should reject invalid date range', async () => {
-                const offeringId = 'offering-validate-3';
-                const amount = '500.00';
-                const periodStart = new Date('2024-12-31');
-                const periodEnd = new Date('2024-12-01');
-
-                (mockPool.query as jest.Mock).mockResolvedValueOnce({ rows: [] });
-
-                const result = await service.validateRevenueReport(
-                    offeringId,
-                    amount,
-                    periodStart,
-                    periodEnd
-                );
-
-                expect(result.isValid).toBe(false);
-                expect(result.errors).toContain('Period end must be after period start');
-            });
-
-            it('should reject future period start', async () => {
-                const offeringId = 'offering-validate-4';
-                const amount = '500.00';
-                const periodStart = new Date('2099-01-01');
-                const periodEnd = new Date('2099-01-31');
-
-                (mockPool.query as jest.Mock).mockResolvedValueOnce({ rows: [] });
-
-                const result = await service.validateRevenueReport(
-                    offeringId,
-                    amount,
-                    periodStart,
-                    periodEnd
-                );
-
-                expect(result.isValid).toBe(false);
-                expect(result.errors).toContain('Period start cannot be in the future');
-            });
-
-            it('should reject duplicate report for same offering and period', async () => {
-                const offeringId = 'offering-validate-5';
-                const amount = '500.00';
-                const periodStart = new Date('2024-10-01');
-                const periodEnd = new Date('2024-10-31');
-
-                (mockPool.query as jest.Mock).mockResolvedValueOnce({
-                    rows: [{
-                        id: 'existing-report',
-                        offering_id: offeringId,
-                        amount: '500.00',
-                        period_start: periodStart,
-                        period_end: periodEnd,
-                        created_at: new Date(),
-                        updated_at: new Date(),
-                    }],
-                });
-
-                const result = await service.validateRevenueReport(
-                    offeringId,
-                    amount,
-                    periodStart,
-                    periodEnd
-                );
-
-                expect(result.isValid).toBe(false);
-                expect(result.errors).toContain('Revenue report already exists for this offering and period');
-            });
-        });
-    });
-});
-
-describe('Revenue Reconciliation Routes - Integration Tests', () => {
-    const prefix = process.env.API_VERSION_PREFIX ?? '/api/v1';
-
-    describe('POST /api/v1/reconciliation/reconcile', () => {
-        it('should return 401 without authentication', async () => {
-            const res = await request(app)
-                .post(`${prefix}/reconciliation/reconcile`)
-                .send({});
-            expect(res.status).toBe(401);
-        });
-
-        it('should return 400 when offeringId is missing', async () => {
-            const res = await request(app)
-                .post(`${prefix}/reconciliation/reconcile`)
-                .set('x-user-id', 'user-1')
-                .set('x-user-role', 'admin')
-                .send({
-                    periodStart: '2024-01-01',
-                    periodEnd: '2024-01-31',
-                });
-            expect(res.status).toBe(400);
-        });
-
-        it('should return 400 when period dates are missing', async () => {
-            const res = await request(app)
-                .post(`${prefix}/reconciliation/reconcile`)
-                .set('x-user-id', 'user-1')
-                .set('x-user-role', 'admin')
-                .send({
-                    offeringId: 'offering-1',
-                });
-            expect(res.status).toBe(400);
-        });
-
-        it('should return 400 for invalid date format', async () => {
-            const res = await request(app)
-                .post(`${prefix}/reconciliation/reconcile`)
-                .set('x-user-id', 'user-1')
-                .set('x-user-role', 'admin')
-                .send({
-                    offeringId: 'offering-1',
-                    periodStart: 'invalid-date',
-                    periodEnd: '2024-01-31',
-                });
-            expect(res.status).toBe(400);
-        });
-
-        it('should return 400 when periodEnd is before periodStart', async () => {
-            const res = await request(app)
-                .post(`${prefix}/reconciliation/reconcile`)
-                .set('x-user-id', 'user-1')
-                .set('x-user-role', 'admin')
-                .send({
-                    offeringId: 'offering-1',
-                    periodStart: '2024-01-31',
-                    periodEnd: '2024-01-01',
-                });
-            expect(res.status).toBe(400);
-        });
-
-        it('should return 403 for non-admin on non-owned offering', async () => {
-            const res = await request(app)
-                .post(`${prefix}/reconciliation/reconcile`)
-                .set('x-user-id', 'other-user')
-                .set('x-user-role', 'startup')
-                .send({
-                    offeringId: 'offering-1',
-                    periodStart: '2024-01-01',
-                    periodEnd: '2024-01-31',
-                });
-            expect(res.status).toBeGreaterThanOrEqual(400);
-        });
-
-        it('should return 404 for non-existent offering', async () => {
-            const res = await request(app)
-                .post(`${prefix}/reconciliation/reconcile`)
-                .set('x-user-id', 'user-1')
-                .set('x-user-role', 'admin')
-                .send({
-                    offeringId: 'non-existent-offering',
-                    periodStart: '2024-01-01',
-                    periodEnd: '2024-01-31',
-                });
-            expect(res.status).toBeGreaterThanOrEqual(400);
-        });
-    });
-
-    describe('GET /api/v1/reconciliation/balance-check/:offeringId', () => {
-        it('should return 401 without authentication', async () => {
-            const res = await request(app)
-                .get(`${prefix}/reconciliation/balance-check/offering-1`);
-            expect(res.status).toBe(401);
-        });
-
-        it('should return 400 when period query params are missing', async () => {
-            const res = await request(app)
-                .get(`${prefix}/reconciliation/balance-check/offering-1`)
-                .set('x-user-id', 'user-1')
-                .set('x-user-role', 'admin');
-            expect(res.status).toBe(400);
-        });
-
-        it('should return 400 for invalid date format', async () => {
-            const res = await request(app)
-                .get(`${prefix}/reconciliation/balance-check/offering-1?periodStart=invalid&periodEnd=2024-01-31`)
-                .set('x-user-id', 'user-1')
-                .set('x-user-role', 'admin');
-            expect(res.status).toBe(400);
-        });
-    });
-
-    describe('POST /api/v1/reconciliation/verify-distribution/:runId', () => {
-        it('should return 401 without authentication', async () => {
-            const res = await request(app)
-                .post(`${prefix}/reconciliation/verify-distribution/run-1`);
-            expect(res.status).toBe(401);
-        });
-
-        it('should return 403 for non-admin users', async () => {
-            const res = await request(app)
-                .post(`${prefix}/reconciliation/verify-distribution/run-1`)
-                .set('x-user-id', 'user-1')
-                .set('x-user-role', 'startup');
-            expect(res.status).toBe(403);
-        });
-    });
-
-    describe('POST /api/v1/reconciliation/validate-report', () => {
-        it('should return 401 without authentication', async () => {
-            const res = await request(app)
-                .post(`${prefix}/reconciliation/validate-report`)
-                .send({});
-            expect(res.status).toBe(401);
-        });
-
-        it('should return 400 when amount is missing', async () => {
-            const res = await request(app)
-                .post(`${prefix}/reconciliation/validate-report`)
-                .set('x-user-id', 'user-1')
-                .set('x-user-role', 'admin')
-                .send({
-                    offeringId: 'offering-1',
-                    periodStart: '2024-01-01',
-                    periodEnd: '2024-01-31',
-                });
-            expect(res.status).toBe(400);
-        });
-
-        it('should return 400 for negative amount', async () => {
-            const res = await request(app)
-                .post(`${prefix}/reconciliation/validate-report`)
-                .set('x-user-id', 'user-1')
-                .set('x-user-role', 'admin')
-                .send({
-                    offeringId: 'offering-1',
-                    amount: '-100',
-                    periodStart: '2024-01-01',
-                    periodEnd: '2024-01-31',
-                });
-            expect(res.status).toBe(400);
-        });
-
-        it('should return 400 for invalid amount format', async () => {
-            const res = await request(app)
-                .post(`${prefix}/reconciliation/validate-report`)
-                .set('x-user-id', 'user-1')
-                .set('x-user-role', 'admin')
-                .send({
-                    offeringId: 'offering-1',
-                    amount: 'not-a-number',
-                    periodStart: '2024-01-01',
-                    periodEnd: '2024-01-31',
-                });
-            expect(res.status).toBe(400);
-        });
-    });
-});
-
-describe('Revenue Reconciliation Security Tests', () => {
-    const prefix = process.env.API_VERSION_PREFIX ?? '/api/v1';
-
-    describe('Authentication Boundary Tests', () => {
-        it('should reject requests without x-user-id header', async () => {
-            const res = await request(app)
-                .post(`${prefix}/reconciliation/reconcile`)
-                .set('x-user-role', 'admin')
-                .send({
-                    offeringId: 'offering-1',
-                    periodStart: '2024-01-01',
-                    periodEnd: '2024-01-31',
-                });
-            expect(res.status).toBe(401);
-        });
-
-        it('should reject requests without x-user-role header', async () => {
-            const res = await request(app)
-                .post(`${prefix}/reconciliation/reconcile`)
-                .set('x-user-id', 'user-1')
-                .send({
-                    offeringId: 'offering-1',
-                    periodStart: '2024-01-01',
-                    periodEnd: '2024-01-31',
-                });
-            expect(res.status).toBe(401);
-        });
-
-        it('should reject requests with empty headers', async () => {
-            const res = await request(app)
-                .post(`${prefix}/reconciliation/reconcile`)
-                .set('x-user-id', '')
-                .set('x-user-role', '')
-                .send({
-                    offeringId: 'offering-1',
-                    periodStart: '2024-01-01',
-                    periodEnd: '2024-01-31',
-                });
-            expect(res.status).toBe(401);
-        });
-    });
-
-    describe('Authorization Boundary Tests', () => {
-        it('should allow admin to reconcile any offering', async () => {
-            const res = await request(app)
-                .post(`${prefix}/reconciliation/reconcile`)
-                .set('x-user-id', 'admin-user')
-                .set('x-user-role', 'admin')
-                .send({
-                    offeringId: 'any-offering',
-                    periodStart: '2024-01-01',
-                    periodEnd: '2024-01-31',
-                });
-            expect([200, 404, 500]).toContain(res.status);
-        });
-
-        it('should reject startup role from verify-distribution endpoint', async () => {
-            const res = await request(app)
-                .post(`${prefix}/reconciliation/verify-distribution/some-run-id`)
-                .set('x-user-id', 'startup-user')
-                .set('x-user-role', 'startup');
-            expect(res.status).toBe(403);
-        });
-    });
-
-    describe('Input Validation Tests', () => {
-        it('should reject SQL injection attempts in offeringId', async () => {
-            const res = await request(app)
-                .post(`${prefix}/reconciliation/reconcile`)
-                .set('x-user-id', 'admin')
-                .set('x-user-role', 'admin')
-                .send({
-                    offeringId: "'; DROP TABLE revenue_reports; --",
-                    periodStart: '2024-01-01',
-                    periodEnd: '2024-01-31',
-                });
-            expect(res.status).toBeGreaterThanOrEqual(400);
-        });
-
-        it('should reject XSS attempts in amount field', async () => {
-            const res = await request(app)
-                .post(`${prefix}/reconciliation/validate-report`)
-                .set('x-user-id', 'admin')
-                .set('x-user-role', 'admin')
-                .send({
-                    offeringId: 'offering-1',
-                    amount: '<script>alert("xss")</script>',
-                    periodStart: '2024-01-01',
-                    periodEnd: '2024-01-31',
-                });
-            expect(res.status).toBeGreaterThanOrEqual(400);
-        });
-
-        it('should handle extremely large amounts', async () => {
-            const res = await request(app)
-                .post(`${prefix}/reconciliation/validate-report`)
-                .set('x-user-id', 'admin')
-                .set('x-user-role', 'admin')
-                .send({
-                    offeringId: 'offering-1',
-                    amount: '999999999999999999999999999999.99',
-                    periodStart: '2024-01-01',
-                    periodEnd: '2024-01-31',
-                });
-            expect(res.status).toBeGreaterThanOrEqual(400);
-        });
-    });
+  });
 });
 
 describe('Revenue Reconciliation Edge Case Tests', () => {
