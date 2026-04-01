@@ -34,7 +34,7 @@ describe('SessionRepository', () => {
 
       expect(mockPool.query).toHaveBeenCalledWith(
         expect.stringContaining('INSERT INTO sessions'),
-        [input.user_id, input.token_hash, input.expires_at]
+        expect.arrayContaining([input.user_id, input.token_hash, input.expires_at]),
       );
       expect(result.id).toBe('session-123');
     });

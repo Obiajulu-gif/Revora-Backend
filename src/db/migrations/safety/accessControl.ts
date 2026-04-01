@@ -335,12 +335,22 @@ export class MigrationAccessControl {
 
     // Check basic execution permission
     if (!permissions.canExecute) {
-      return { allowed: false, reason: 'Role does not have execution permission' };
+      const reason = 'Role does not have execution permission';
+      await this.auditLogger.logSecurityViolation('unknown', reason, securityContext, {
+        userRole,
+        migrationRiskLevel,
+      });
+      return { allowed: false, reason };
     }
 
     // Check environment permission
     if (!permissions.environments.includes(securityContext.environment)) {
-      return { allowed: false, reason: `Role not allowed in environment: ${securityContext.environment}` };
+      const reason = `Role not allowed in environment: ${securityContext.environment}`;
+      await this.auditLogger.logSecurityViolation('unknown', reason, securityContext, {
+        userRole,
+        migrationRiskLevel,
+      });
+      return { allowed: false, reason };
     }
 
     // Check risk level permission
@@ -349,9 +359,16 @@ export class MigrationAccessControl {
     const migrationRiskIndex = riskLevels.indexOf(migrationRiskLevel);
     
     if (migrationRiskIndex > userMaxRiskIndex) {
+      const reason = `Risk level ${migrationRiskLevel} exceeds maximum allowed ${permissions.maxRiskLevel}; approval required`;
+      await this.auditLogger.logSecurityViolation('unknown', reason, securityContext, {
+        userRole,
+        migrationRiskLevel,
+        roleMaxRiskLevel: permissions.maxRiskLevel,
+      });
       return { 
         allowed: false, 
-        reason: `Risk level ${migrationRiskLevel} exceeds maximum allowed ${permissions.maxRiskLevel}` 
+        reason,
+        approvalRequired: true,
       };
     }
 
@@ -366,9 +383,14 @@ export class MigrationAccessControl {
                           permissions.timeRestrictions.daysOfWeek.includes(currentDay);
 
       if (!inTimeWindow) {
+        const reason = `Migration not allowed at this time. Hours: ${permissions.timeRestrictions.startHour}-${permissions.timeRestrictions.endHour}, Days: ${permissions.timeRestrictions.daysOfWeek.join(', ')}`;
+        await this.auditLogger.logSecurityViolation('unknown', reason, securityContext, {
+          userRole,
+          migrationRiskLevel,
+        });
         return { 
           allowed: false, 
-          reason: `Migration not allowed at this time. Hours: ${permissions.timeRestrictions.startHour}-${permissions.timeRestrictions.endHour}, Days: ${permissions.timeRestrictions.daysOfWeek.join(', ')}` 
+          reason,
         };
       }
     }
@@ -378,9 +400,14 @@ export class MigrationAccessControl {
                            this.config.riskThresholds[migrationRiskLevel].requireApproval;
 
     if (approvalRequired && !permissions.canApprove) {
+      const reason = 'Approval required but user cannot approve migrations';
+      await this.auditLogger.logSecurityViolation('unknown', reason, securityContext, {
+        userRole,
+        migrationRiskLevel,
+      });
       return { 
         allowed: false, 
-        reason: 'Approval required but user cannot approve migrations',
+        reason,
         approvalRequired: true 
       };
     }
@@ -569,6 +596,12 @@ export const createMigrationApprovalRepository = (
   pool?: Pool,
   environment = process.env.NODE_ENV
 ): MigrationApprovalRepository => {
+  const injected = (pool as { __migrationApprovalRepository?: MigrationApprovalRepository } | undefined)
+    ?.__migrationApprovalRepository;
+  if (injected) {
+    return injected;
+  }
+
   if (environment === 'production' && pool) {
     return new DatabaseMigrationApprovalRepository(pool);
   }

@@ -79,7 +79,7 @@ describe('Round-trip registration (Req 7.7)', () => {
     // First registration – should succeed with 201
     const res1 = makeRes();
     await handler(
-      makeReq({ email: 'Alice@Example.COM', password: 'password123' }),
+      makeReq({ email: 'Alice@Example.COM', password: 'ValidPass!934X' }),
       res1,
       makeNext(),
     );
@@ -89,7 +89,7 @@ describe('Round-trip registration (Req 7.7)', () => {
     // Second registration with the same email (different casing) – should return 409
     const res2 = makeRes();
     await handler(
-      makeReq({ email: 'alice@example.com', password: 'differentpassword' }),
+      makeReq({ email: 'alice@example.com', password: 'Different!Pass55' }),
       res2,
       makeNext(),
     );
@@ -107,7 +107,7 @@ describe('Round-trip registration (Req 7.7)', () => {
 
     const res1 = makeRes();
     await handler(
-      makeReq({ email: 'USER@DOMAIN.COM', password: 'password123' }),
+      makeReq({ email: 'USER@DOMAIN.COM', password: 'ValidPass!934X' }),
       res1,
       makeNext(),
     );
@@ -115,7 +115,7 @@ describe('Round-trip registration (Req 7.7)', () => {
 
     const res2 = makeRes();
     await handler(
-      makeReq({ email: 'user@domain.com', password: 'password456' }),
+      makeReq({ email: 'user@domain.com', password: 'Another!Pass77' }),
       res2,
       makeNext(),
     );

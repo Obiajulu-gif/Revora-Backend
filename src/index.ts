@@ -540,6 +540,7 @@ export function createApp(dependencies: AppDependencies = {}): express.Express {
   const healthStatus = dependencies.healthStatus ?? dbHealth;
 
   app.use(requestIdMiddleware());
+  app.set('trust proxy', 1);
   app.use(createCorsMiddleware() as RequestHandler);
   app.use(express.json({ limit: '32kb' }));
   app.use(morgan(process.env.NODE_ENV === 'test' ? 'tiny' : 'dev'));

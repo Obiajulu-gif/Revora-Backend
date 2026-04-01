@@ -119,14 +119,16 @@ export const Errors = {
     details?: unknown,
   ): AppError => createError(ErrorCode.SERVICE_UNAVAILABLE, message, 503, details),
 
-  internal: (details?: unknown): AppError =>
-    createError(
+  internal: (messageOrDetails?: unknown, details?: unknown): AppError => {
+    const hasCustomMessage = typeof messageOrDetails === 'string';
+    return createError(
       ErrorCode.INTERNAL_ERROR,
-      'Internal server error',
+      hasCustomMessage ? messageOrDetails : 'Internal server error',
       500,
-      details,
+      hasCustomMessage ? details : messageOrDetails,
       { expose: false },
-    ),
+    );
+  },
 };
 
 export function throwError(

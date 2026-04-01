@@ -139,7 +139,7 @@ describe("jwt utilities", () => {
         expiresIn: "-1s",
       });
 
-      expect(() => verifyToken(expiredToken)).toThrow("jwt expired");
+      expect(() => verifyToken(expiredToken)).toThrow("Token has expired");
     });
 
     it("should throw on token with wrong secret", () => {

@@ -46,6 +46,12 @@ function generateUUID(): string {
   });
 }
 
+let mockTimeTick = 0;
+function nextTestTimestamp(): Date {
+  mockTimeTick += 1;
+  return new Date(Date.now() + mockTimeTick);
+}
+
 
 // ── Mock Repositories ───────────────────────────────────────────────────────
 
@@ -112,8 +118,8 @@ class MockUserRepository {
       password_hash: input.password_hash,
       name: input.name,
       role: input.role,
-      created_at: new Date(),
-      updated_at: new Date(),
+      created_at: nextTestTimestamp(),
+      updated_at: nextTestTimestamp(),
     };
 
     this.users.set(user.id, user);
@@ -140,7 +146,7 @@ class MockSessionRepository {
     const session: Session = {
       id: generateUUID(),
       user_id: userId,
-      created_at: new Date(),
+      created_at: nextTestTimestamp(),
     };
     this.sessions.set(session.id, session);
     return session.id;
@@ -175,8 +181,8 @@ class MockOfferingRepository {
       description: input.description,
       status: input.status || 'draft',
       amount: input.amount,
-      created_at: new Date(),
-      updated_at: new Date(),
+      created_at: nextTestTimestamp(),
+      updated_at: nextTestTimestamp(),
     };
     this.offerings.set(offering.id, offering);
     return offering;
@@ -200,11 +206,11 @@ class MockOfferingRepository {
 
     results.sort((a, b) => b.created_at.getTime() - a.created_at.getTime());
 
-    if (opts?.offset) {
+    if (opts?.offset !== undefined) {
       results = results.slice(opts.offset);
     }
 
-    if (opts?.limit) {
+    if (opts?.limit !== undefined) {
       results = results.slice(0, opts.limit);
     }
 
@@ -224,11 +230,11 @@ class MockOfferingRepository {
 
     results.sort((a, b) => b.created_at.getTime() - a.created_at.getTime());
 
-    if (opts?.offset) {
+    if (opts?.offset !== undefined) {
       results = results.slice(opts.offset);
     }
 
-    if (opts?.limit) {
+    if (opts?.limit !== undefined) {
       results = results.slice(0, opts.limit);
     }
 
@@ -259,8 +265,8 @@ class MockInvestmentRepository {
       asset: input.asset,
       status: input.status || 'pending',
       tx_hash: input.tx_hash,
-      created_at: new Date(),
-      updated_at: new Date(),
+      created_at: nextTestTimestamp(),
+      updated_at: nextTestTimestamp(),
     };
     this.investments.set(investment.id, investment);
     return investment;
@@ -282,11 +288,11 @@ class MockInvestmentRepository {
 
     results.sort((a, b) => b.created_at.getTime() - a.created_at.getTime());
 
-    if (options.offset) {
+    if (options.offset !== undefined) {
       results = results.slice(options.offset);
     }
 
-    if (options.limit) {
+    if (options.limit !== undefined) {
       results = results.slice(0, options.limit);
     }
 
@@ -1182,4 +1188,3 @@ describe('Backend End-to-End Happy Path Tests', () => {
     });
   });
 });
-

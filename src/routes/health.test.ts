@@ -33,6 +33,21 @@ describe('classifyStellarRPCFailure', () => {
     );
   });
 
+  it('classifies auth failures', () => {
+    expect(classifyStellarRPCFailure({ status: 401 })).toBe(
+      StellarRPCFailureClass.UNAUTHORIZED,
+    );
+    expect(classifyStellarRPCFailure({ status: 403 })).toBe(
+      StellarRPCFailureClass.UNAUTHORIZED,
+    );
+  });
+
+  it('classifies upstream 5xx failures', () => {
+    expect(classifyStellarRPCFailure({ status: 503 })).toBe(
+      StellarRPCFailureClass.UPSTREAM_ERROR,
+    );
+  });
+
   it('classifies malformed responses', () => {
     expect(classifyStellarRPCFailure(new SyntaxError('bad json'))).toBe(
       StellarRPCFailureClass.MALFORMED_RESPONSE,
@@ -47,7 +62,7 @@ describe('classifyStellarRPCFailure', () => {
 });
 
 describe('mapHealthDependencyFailure', () => {
-  it('sanitizes database failures', () => {
+  it('sanitizes database dependency errors', () => {
     const mapped = mapHealthDependencyFailure('database', new Error('password auth failed'));
 
     expect(mapped.toResponse()).toEqual({

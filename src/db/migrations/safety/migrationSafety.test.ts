@@ -41,8 +41,11 @@ import { HardenedMigrationExecutor, MigrationManager } from './executor';
 
 // Mock implementations
 const createMockPool = (): jest.Mocked<Pool> => ({
-  connect: jest.fn().mockResolvedValue({} as any),
-  query: jest.fn(),
+  connect: jest.fn().mockResolvedValue({
+    query: jest.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
+    release: jest.fn(),
+  } as any),
+  query: jest.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
   end: jest.fn(),
 } as any);
 
@@ -90,6 +93,9 @@ describe('Migration Safety System', () => {
     auditRepository = new InMemoryMigrationAuditRepository();
     approvalRepository = new InMemoryMigrationApprovalRepository();
     rollbackRepository = new InMemoryMigrationRollbackRepository();
+    (mockPool as any).__migrationAuditRepository = auditRepository;
+    (mockPool as any).__migrationApprovalRepository = approvalRepository;
+    (mockPool as any).__migrationRollbackRepository = rollbackRepository;
   });
 
   describe('MigrationFileAnalyzer', () => {
@@ -819,7 +825,7 @@ describe('Migration Safety System', () => {
       const rollbackResult = await executor.rollbackMigration('exec-1', securityContext);
 
       expect(rollbackResult.success).toBe(true);
-      expect(rollbackResult.stepsExecuted).toBe(1);
+      expect(rollbackResult.stepsExecuted).toHaveLength(1);
       expect(rollbackResult.dataLoss).toBe('none');
     });
   });

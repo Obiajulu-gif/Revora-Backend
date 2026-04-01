@@ -2,6 +2,7 @@
 module.exports = {
   testEnvironment: "node",
   setupFiles: ["<rootDir>/jest.setup.env.cjs"],
+  setupFilesAfterEnv: ["<rootDir>/jest.setup.after-env.cjs"],
   transform: {
     // Disable ts-jest type diagnostics so pre-existing type errors in the test
     // corpus do not block test execution.  Runtime type errors will still surface

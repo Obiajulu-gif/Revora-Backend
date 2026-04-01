@@ -41,7 +41,7 @@ function makeUser(overrides: Partial<RegisteredUser> = {}): RegisteredUser {
 /** A valid email that passes the handler's EMAIL_RE check. */
 const VALID_EMAIL = 'test@example.com';
 /** A valid password that passes the minimum-length check. */
-const VALID_PASSWORD = 'password123';
+const VALID_PASSWORD = 'ValidPassword123!';
 
 /** Email regex used by RegisterHandler – must stay in sync with the handler. */
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;

@@ -218,11 +218,10 @@ describe("SessionStore", () => {
       const mixed = new SessionStore({ ttlMs: 60_000, sweepIntervalMs: 0 });
       const alive  = await mixed.create("alive",   "admin");
       const zombie = await mixed.create("zombie",  "client");
-      // Manually expire zombie by advancing clock only for that session check
-      jest.spyOn(Date, "now").mockReturnValue(now + 2_000);
-      // Force zombie to look expired: re-create with short TTL store
+      // Create a short-lived session, then advance time beyond its TTL.
       const mixedShort = new SessionStore({ ttlMs: 500, sweepIntervalMs: 0 });
       await mixedShort.create("alive", "admin");  // this one is "dead"
+      jest.spyOn(Date, "now").mockReturnValue(now + 2_000);
       const evicted = mixedShort.sweep();
       jest.restoreAllMocks();
 
